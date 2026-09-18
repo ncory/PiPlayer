@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from . import hw as hwmod
-from .backend import Backend, Layer, Source
+from .backend import Backend, Layer, Source, eval_keyframes
 from .config import Store
 from .media import MediaLibrary, media_kind
 
@@ -32,6 +32,7 @@ TICK = 0.04  # scheduler period (s)
 PRELOAD_LEAD = 4.0  # start loading the next item this long before it's needed
 LOOKAHEAD = 0.35  # schedule switches this far ahead so they land frame-exact
 START_MARGIN = 0.08  # minimum time between "now" and a layer's start
+HIDE_RAMP = 0.002  # "instant" hides are a 2 ms ramp so earlier keyframes stay valid
 LOAD_TIMEOUT = 20.0
 RESTART_BACKOFF = (2, 5, 10, 30)
 
@@ -352,29 +353,35 @@ class Engine:
         if d <= 0:
             kind = "cut"
 
+        # New layers get fresh curves; the outgoing layer's curve is
+        # *extended* (keeping any ramp still in progress, e.g. its own
+        # fade-in when items are short) so it never jumps.
         if kind == "cut":
             if layer:
                 b.start_layer(layer, t0)
-                b.set_alpha(layer, [(t0, 1.0)])
-                b.set_volume(layer, [(t0, 1.0)])
+                self._curve(layer, "alpha", [(t0, 1.0)])
+                self._curve(layer, "volume", [(t0, 1.0)])
             if old:
-                b.set_alpha(old, [(t0, 0.0)])
-                b.set_volume(old, [(t0, 0.0)])
+                self._extend(old, "alpha", t0 - HIDE_RAMP, t0, 0.0)
+                self._extend(old, "volume", t0 - HIDE_RAMP, t0, 0.0)
                 self.outgoing.append((old, t0 + 0.5))
             self.transition_until = t0
         elif kind == "dissolve":
             if layer:
                 b.start_layer(layer, t0)
-                b.set_alpha(layer, [(t0, 0.0), (t0 + d, 1.0)])
-                b.set_volume(layer, [(t0, 0.0), (t0 + d, 1.0)])
+                self._curve(layer, "alpha", [(t0, 0.0), (t0 + d, 1.0)])
+                self._curve(layer, "volume", [(t0, 0.0), (t0 + d, 1.0)])
             if old:
-                # An opaque full-frame layer fading in on top gives a true
-                # crossfade by itself; if the incoming picture is letterboxed
-                # (or there is none), fade the old one out too so it doesn't
-                # linger in the bars.
-                if layer is None or not layer.full_frame:
-                    b.set_alpha(old, [(t0, 1.0), (t0 + d, 0.0)])
-                b.set_volume(old, [(t0, 1.0), (t0 + d, 0.0)])
+                # True crossfade: the outgoing picture stays as it is
+                # underneath while the new one fades in on top, and is hidden
+                # on the frame the new one reaches full opacity. (Fading both
+                # would dip toward the background mid-way.) With nothing
+                # incoming (stop), the old picture fades out to the background.
+                if layer is None:
+                    self._extend(old, "alpha", t0, t0 + d, 0.0)
+                else:
+                    self._extend(old, "alpha", t0 + d - HIDE_RAMP, t0 + d, 0.0)
+                self._extend(old, "volume", t0, t0 + d, 0.0)
                 self.outgoing.append((old, t0 + d + 0.3))
             self.transition_until = t0 + d
         else:  # dip through a color
@@ -382,11 +389,11 @@ class Engine:
             b.dip(trans.get("color", "#000000"), [(t0, 0.0), (mid, 1.0), (t0 + d, 0.0)])
             if layer:
                 b.start_layer(layer, mid)
-                b.set_alpha(layer, [(mid, 1.0)])
-                b.set_volume(layer, [(mid, 0.0), (t0 + d, 1.0)])
+                self._curve(layer, "alpha", [(mid, 1.0)])
+                self._curve(layer, "volume", [(mid, 0.0), (t0 + d, 1.0)])
             if old:
-                b.set_alpha(old, [(mid, 0.0)])
-                b.set_volume(old, [(t0, 1.0), (mid, 0.0)])
+                self._extend(old, "alpha", mid - HIDE_RAMP, mid, 0.0)
+                self._extend(old, "volume", t0, mid, 0.0)
                 self.outgoing.append((old, mid + 0.3))
             self.transition_until = t0 + d
 
@@ -401,6 +408,19 @@ class Engine:
             self.target = None
             self.state = "stopped"
         self._notify()
+
+    def _curve(self, layer: Layer, prop: str, kfs: list[tuple[float, float]]) -> None:
+        """Set a layer's alpha/volume keyframes (and remember them)."""
+        kfs = sorted(kfs)
+        layer.curves[prop] = kfs
+        (self.backend.set_alpha if prop == "alpha" else self.backend.set_volume)(layer, kfs)
+
+    def _extend(self, layer: Layer, prop: str, t_from: float, t_to: float, value: float) -> None:
+        """Ramp from wherever the layer's curve is at `t_from` to `value` at `t_to`."""
+        kfs = layer.curves.get(prop, [])
+        start = eval_keyframes(kfs, t_from, 1.0)
+        kept = [kf for kf in kfs if kf[0] < t_from]
+        self._curve(layer, prop, kept + [(t_from, start), (t_to, value)])
 
     async def _make_layer(self, target: Target) -> Layer:
         """Resolve a playlist item to a Source and start loading it."""

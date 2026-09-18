@@ -50,6 +50,7 @@ class Layer:
         self.duration: float | None = None  # reported by the backend when known
         self.full_frame = True  # covers the whole output (no letterbox bars)
         self.offset: tuple[int, int] = source.offset
+        self.curves: dict[str, list[tuple[float, float]]] = {}  # engine's alpha/volume keyframes
         self.eos = False
         self.error: str | None = None
         self.created = 0.0

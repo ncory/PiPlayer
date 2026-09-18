@@ -91,16 +91,38 @@ async def test_dissolve_timing(data):
     await eng.shutdown()
 
 
-async def test_dissolve_to_letterboxed_fades_old_out(data):
+@pytest.mark.parametrize("incoming", [
+    {"media": "old-4x3.mp4"},                                 # letterboxed
+    {"media": "clip2.mp4", "offset_x": -5, "offset_y": 2},   # nudged a few pixels
+])
+async def test_dissolve_is_a_true_crossfade(data, incoming):
+    """The outgoing picture never fades (no dip toward the background); it
+    is hidden exactly when the incoming one is fully opaque."""
     eng = await make_engine(data, [{
-        "id": "default", "items": [{"media": "clip.mp4"}, {"media": "old-4x3.mp4"}],
+        "id": "default", "items": [{"media": "clip.mp4"}, incoming],
         "transition": {"type": "dissolve", "duration": 0.4}}])
     await wait_for(lambda: eng.current is not None)
     a = eng.current
     await wait_for(lambda: eng.current is not a, timeout=3)
     b = eng.current
     assert not b.full_frame
-    assert eng.backend.alpha(a, b.start_time + 0.2) == pytest.approx(0.5, abs=0.01)
+    sim: SimBackend = eng.backend
+    t0 = b.start_time
+    for dt in (0.0, 0.1, 0.2, 0.39):
+        assert sim.alpha(a, t0 + dt) == pytest.approx(1.0)
+    assert sim.alpha(b, t0 + 0.2) == pytest.approx(0.5, abs=0.01)
+    assert sim.alpha(a, t0 + 0.4) == pytest.approx(0.0)
+    assert sim.alpha(b, t0 + 0.4) == pytest.approx(1.0)
+    await eng.shutdown()
+
+
+async def test_stop_with_dissolve_fades_out(data):
+    eng = await make_engine(data, [{"id": "default", "items": items("red.png", duration=30)}])
+    await wait_for(lambda: eng.current is not None)
+    a = eng.current
+    await eng.stop({"type": "dissolve", "duration": 0.4, "color": "#000000"})
+    t0 = eng.transition_until - 0.4
+    assert eng.backend.alpha(a, t0 + 0.2) == pytest.approx(0.5, abs=0.01)
     await eng.shutdown()
 
 

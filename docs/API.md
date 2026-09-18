@@ -45,7 +45,7 @@ Base URL: `http://<pi-address>/` (port 80 when installed as a service, 8080 when
 **Transition**: `{"type": "cut" | "dissolve" | "dip", "duration": seconds, "color": "#rrggbb"}`
 
 - `cut`: instant.
-- `dissolve`: crossfade. For videos, the dissolve starts `duration` seconds before the outgoing video ends, so nothing freezes.
+- `dissolve`: a true crossfade. The incoming item fades in over the outgoing one, which stays fully opaque underneath until the dissolve completes. For videos, the dissolve starts `duration` seconds before the outgoing video ends, so nothing freezes. Audio crossfades over the same time.
 - `dip`: fade out to `color`, then fade in to the next item (half the duration each). The next video starts at the midpoint.
 
 Shorthand: a transition can also be given as just the type string (`"dissolve"`), using a duration of 1 s and black.

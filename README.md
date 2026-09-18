@@ -130,7 +130,7 @@ There is no GPU compositing. Decoded frames go straight onto hardware display pl
 
 - Each playlist item becomes a *layer* that is added to the running GStreamer pipeline about 4 s before it's needed. It decodes its first frame and holds it with a blocking pad probe. Starting the layer sets that pad's time offset so the held frame lands on an exact running time, then releases it.
 - Transitions are opacity keyframes. The presenter evaluates them for the next display refresh and applies every plane's frame, position and opacity in a single atomic update, so each refresh shows one consistent frame. Audio fades are keyframes on the audio mixer's pads.
-- A dissolve fades the incoming layer in over the outgoing one; if the incoming picture is letterboxed, the outgoing one also fades out. A dip fades a solid-color plane in and out and cuts between items underneath it at the midpoint.
+- A dissolve is a true crossfade: the incoming layer fades in over the outgoing one, which stays fully opaque until the incoming layer is fully opaque, and is then hidden. If the incoming picture has letterbox bars (or is offset), the outgoing picture shows in those areas until the dissolve completes. A dip fades a solid-color plane in and out and cuts between items underneath it at the midpoint.
 - Images are rendered once, at the display resolution, into scanout buffers.
 - Why not the GPU: on the Pi 3 the GPU gets empty textures when it imports the decoder's YUV buffers, and uploading 1080p frames through the CPU runs at about 1 fps. The display controller scans the same buffers out for free. (`--backend gl` keeps a GStreamer GL-compositing renderer for other hardware.)
 
