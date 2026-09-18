@@ -18,6 +18,7 @@ from . import __version__
 from . import hw as hwmod
 from .config import Store, ValidationError, validate_transition
 from .engine import Engine
+from .gpi import GpiManager
 from .media import MediaLibrary, media_kind
 
 log = logging.getLogger(__name__)
@@ -67,11 +68,15 @@ async def cors_mw(request: web.Request, handler):
 
 
 class Api:
-    def __init__(self, store: Store, library: MediaLibrary, engine: Engine, hw: dict):
+    def __init__(self, store: Store, library: MediaLibrary, engine: Engine, hw: dict,
+                 gpi: GpiManager | None = None):
         self.store = store
         self.library = library
         self.engine = engine
         self.hw = hw
+        self.gpi = gpi
+        if gpi:
+            gpi.on_event(self.broadcast)
         self.sockets: set[web.WebSocketResponse] = set()
         self.started = time.time()
         engine.on_status(lambda st: self.broadcast({"type": "status", "status": st}))
@@ -302,6 +307,26 @@ class Api:
         body = await self.params(request)
         return _json(self.store.update_settings(body))
 
+    # ------------------------------------------------------------------ gpi
+    def _gpi(self) -> GpiManager:
+        if self.gpi is None:
+            raise web.HTTPServiceUnavailable(text="GPI not available")
+        return self.gpi
+
+    async def get_gpi(self, request):
+        return _json(self._gpi().state())
+
+    async def put_gpi(self, request):
+        gpi = self._gpi()
+        body = await self.params(request)
+        self.store.update_settings({"gpi": body})
+        return _json(gpi.state())
+
+    async def fire_gpi(self, request):
+        gpi = self._gpi()
+        gpi.fire(request.match_info["id"], source="API")
+        return _json(gpi.state())
+
     # --------------------------------------------------------------- system
     async def system(self, request):
         return _json({
@@ -346,8 +371,9 @@ class Api:
         return web.FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
 
-def build_app(store: Store, library: MediaLibrary, engine: Engine, hw: dict) -> web.Application:
-    api = Api(store, library, engine, hw)
+def build_app(store: Store, library: MediaLibrary, engine: Engine, hw: dict,
+              gpi: GpiManager | None = None) -> web.Application:
+    api = Api(store, library, engine, hw, gpi)
     app = web.Application(middlewares=[cors_mw, errors_mw], client_max_size=4 * 1024 * 1024)
     r = app.router
     transport = [
@@ -377,6 +403,10 @@ def build_app(store: Store, library: MediaLibrary, engine: Engine, hw: dict) -> 
     r.add_get("/api/settings", api.get_settings)
     r.add_patch("/api/settings", api.patch_settings)
     r.add_put("/api/settings", api.patch_settings)
+    r.add_get("/api/gpi", api.get_gpi)
+    r.add_put("/api/gpi", api.put_gpi)
+    r.add_post("/api/gpi/{id}/fire", api.fire_gpi)
+    r.add_get("/api/gpi/{id}/fire", api.fire_gpi)
     r.add_get("/api/system", api.system)
     r.add_post("/api/system/restart-renderer", api.restart_renderer)
     r.add_get("/api/preview.jpg", api.preview)
@@ -392,6 +422,8 @@ def build_app(store: Store, library: MediaLibrary, engine: Engine, hw: dict) -> 
 
     async def on_cleanup(app):
         app[TICKER].cancel()
+        if gpi:
+            gpi.stop()
         await engine.shutdown()
 
     app.on_startup.append(on_startup)

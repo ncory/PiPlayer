@@ -6,6 +6,7 @@ Fullscreen playlist player for the Raspberry Pi, controlled over the network.
 - **Playlists** of videos and still images. Images have per-item display durations. Each playlist can **loop**, **stop**, **hold** the last frame, or **go to another playlist** when it ends.
 - **Transitions** between items and playlists: **cut**, **dissolve**, or **dip through a color**. You can set them per playlist, per item, per "go to" link, or per cue.
 - **Per-item position offsets** (X/Y). Adjust them live: the ⌖ button on a playlist item puts it on screen in loop-item mode. Drag it in the live preview, nudge it with the arrow keys, or pause and fine-tune.
+- **GPI triggers:** contact closures on the Pi's GPIO pins fire playlists or transport commands (next, stop, pause, and so on). Set them up on the Triggers tab.
 - **Web UI** for playlists, media uploads, settings, transport controls (including loop-item) and a live preview of the output.
 - **REST + WebSocket API** for show controllers and scripts. See [docs/API.md](docs/API.md). The same document is shown on the UI's API tab.
 - Output uses the display's own resolution. On a Pi 3 it runs at 30 Hz (1080p30) when the display supports it, or you can pick any mode the display offers.
@@ -70,6 +71,23 @@ Settings → *Display mode* is `auto` or any mode the display offers (for exampl
 
 If the display isn't connected at boot, PiPlayer retries every 30 s and resumes the default playlist once a display appears. To make HDMI come up even when the display is off, add `video=HDMI-A-1:1920x1080@30D` to the end of the single line in `/boot/firmware/cmdline.txt`. The trailing `D` forces the output on.
 
+## GPI triggers (contact closures)
+
+Set these up on the web UI's Triggers tab, or with `PUT /api/gpi`. Each input watches one GPIO pin and runs an action when its contact **closes**, **opens**, or either. The actions are: play a playlist (optionally from a given item, with a transition), next, previous, stop, pause, resume, pause/resume, and loop item.
+
+Wiring: connect a switch, button or dry relay contact between a GPIO pin and a GND pin. The Pi's internal pull-up holds the pin high, and closing the contact pulls it low. No other parts are needed.
+
+| Good GPIO choices | Header pin |  | GND header pins |
+|---|---|---|---|
+| GPIO 17, 27, 22 | 11, 13, 15 | | 6, 9, 14, 20, 25, 30, 34, 39 |
+| GPIO 23, 24, 25 | 16, 18, 22 | | |
+| GPIO 5, 6, 16, 26 | 29, 31, 36, 37 | | |
+
+- The pins are 3.3 V only. **Never connect 5 V or 12 V to a GPIO pin.** For a device that outputs a voltage (such as a show controller's 12 V GPO), use a relay or an optocoupler, or set the input to pull-down / active high for a 3.3 V logic signal.
+- For long cable runs, twisted pair and the kernel debounce (20 ms by default) keep noise out. The hold-off (300 ms by default) ignores re-triggers, such as a double-pressed button.
+- One pin can carry several inputs, for example *closes* plays one playlist and *opens* plays another.
+- The Triggers tab shows each input's live open/closed state, so you can check the wiring. **Test** runs an input's action without touching the hardware.
+
 ## Development (any machine)
 
 ```bash
@@ -92,6 +110,7 @@ piplayer/
   backend_sim.py  simulated renderer for development and tests
   config.py       settings + playlists, validation, JSON persistence
   media.py        media library, probing, image pre-rendering
+  gpi.py          GPIO contact-closure triggers (libgpiod)
   hw.py           Pi model / HDMI / audio detection, health
   static/         web UI (plain HTML/CSS/JS, no build step)
 ```

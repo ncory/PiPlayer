@@ -15,6 +15,7 @@ from . import __version__
 from . import hw as hwmod
 from .config import Store
 from .engine import Engine
+from .gpi import GpiManager
 from .media import MediaLibrary
 from .web import build_app
 
@@ -71,13 +72,15 @@ async def main_async(args) -> None:
     store = Store(data / "state.json")
     library = MediaLibrary(data / "media", data / "cache", hw)
     engine = Engine(store, library, make_backend_factory(args, hw), hw)
-    app = build_app(store, library, engine, hw)
+    gpi = GpiManager(store, engine)
+    app = build_app(store, library, engine, hw, gpi)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, args.host, args.port)
     await site.start()
     log.info("web UI on http://%s:%d/", args.host, args.port)
     await engine.start(autoplay=not args.no_autoplay)
+    await gpi.start()
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()

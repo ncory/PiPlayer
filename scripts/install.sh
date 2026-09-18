@@ -32,7 +32,7 @@ done
 echo "==> Installing packages"
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  python3 python3-gi python3-gst-1.0 python3-aiohttp python3-pil \
+  python3 python3-gi python3-gst-1.0 python3-aiohttp python3-pil python3-libgpiod \
   gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
   gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
   gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl gstreamer1.0-alsa \
@@ -43,7 +43,7 @@ echo "==> Creating user and directories"
 if ! id "$SVC_USER" >/dev/null 2>&1; then
   useradd --system --home-dir "$DATA_DIR" --shell /usr/sbin/nologin "$SVC_USER"
 fi
-usermod -aG video,render,audio "$SVC_USER"
+usermod -aG video,render,audio,gpio "$SVC_USER"
 install -d -o "$SVC_USER" -g "$SVC_USER" "$DATA_DIR" "$DATA_DIR/media"
 # let the login user drop files into the media folder (scp/rsync)
 if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]]; then

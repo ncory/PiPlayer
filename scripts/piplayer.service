@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=piplayer
 Group=piplayer
-SupplementaryGroups=video render audio
+SupplementaryGroups=video render audio gpio
 WorkingDirectory=/opt/piplayer
 Environment=PYTHONUNBUFFERED=1
 Environment=PIPLAYER_DATA=/var/lib/piplayer

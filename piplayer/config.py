@@ -30,6 +30,10 @@ SIZE_RE = re.compile(r"^(auto|\d{3,4}x\d{3,4})$")
 MODE_RE = re.compile(r"^(auto|\d{3,4}x\d{3,4}(@\d{2,3})?)$")
 MAX_TRANSITION_SECONDS = 30.0
 MAX_OFFSET = 10000  # pixels
+GPI_FIRE_ON = ("close", "open", "both")
+GPI_PULLS = ("up", "down", "none")
+GPI_ACTIONS = ("play", "next", "previous", "stop", "pause", "resume", "toggle", "loop_item")
+GPI_MAX_PIN = 27  # BCM GPIO numbers on the 40-pin header
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "default_playlist": "default",
@@ -39,6 +43,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "background_color": "#000000",
     "output": {"mode": "auto", "render_size": "auto", "fps": 30, "rotation": 0},
     "audio": {"enabled": True, "device": "auto", "volume": 100},
+    "gpi": {"enabled": True, "inputs": []},
 }
 
 # Settings that require the video pipeline to be rebuilt when changed.
@@ -132,7 +137,69 @@ def validate_settings(s: dict) -> dict:
     if not isinstance(a["device"], str) or not a["device"]:
         raise ValidationError("audio.device must be 'auto' or an ALSA device name")
     a["volume"] = _num(a["volume"], "audio.volume", 0, 100)
+    out["gpi"] = validate_gpi(out["gpi"])
     return out
+
+
+def validate_gpi_action(a: Any, name: str) -> dict:
+    if isinstance(a, str):
+        a = {"type": a}
+    if not isinstance(a, dict) or a.get("type") not in GPI_ACTIONS:
+        raise ValidationError(f"{name}.type must be one of {', '.join(GPI_ACTIONS)}")
+    t = a["type"]
+    out: dict[str, Any] = {"type": t}
+    if t == "play":
+        out["playlist"] = validate_id(a.get("playlist"))
+        out["index"] = int(_num(a.get("index") or 0, f"{name}.index", 0, 100000))
+    if t in ("play", "next", "previous", "stop"):
+        out["transition"] = validate_transition(a.get("transition"), f"{name}.transition")
+    if t == "loop_item":
+        mode = a.get("mode", "toggle")
+        if mode not in ("on", "off", "toggle"):
+            raise ValidationError(f"{name}.mode must be on, off or toggle")
+        out["mode"] = mode
+    return out
+
+
+def validate_gpi(g: Any) -> dict:
+    if not isinstance(g, dict):
+        raise ValidationError("gpi must be an object")
+    inputs = g.get("inputs") or []
+    if not isinstance(inputs, list):
+        raise ValidationError("gpi.inputs must be a list")
+    out, line_cfg, ids = [], {}, set()
+    for i, inp in enumerate(inputs):
+        name = f"gpi.inputs[{i}]"
+        if not isinstance(inp, dict):
+            raise ValidationError(f"{name} must be an object")
+        pin = int(_num(inp.get("pin"), f"{name}.pin", 0, GPI_MAX_PIN))
+        pull = inp.get("pull", "up")
+        if pull not in GPI_PULLS:
+            raise ValidationError(f"{name}.pull must be one of {', '.join(GPI_PULLS)}")
+        fire_on = inp.get("fire_on", "close")
+        if fire_on not in GPI_FIRE_ON:
+            raise ValidationError(f"{name}.fire_on must be one of {', '.join(GPI_FIRE_ON)}")
+        v = {
+            "id": str(inp.get("id") or secrets.token_hex(3)),
+            "name": str(inp.get("name") or f"GPIO {pin}")[:100],
+            "pin": pin,
+            "fire_on": fire_on,
+            "pull": pull,
+            # closing a contact to GND reads low when pulled up
+            "active_low": bool(inp.get("active_low", pull != "down")),
+            "debounce_ms": int(_num(inp.get("debounce_ms", 20), f"{name}.debounce_ms", 0, 1000)),
+            "holdoff_ms": int(_num(inp.get("holdoff_ms", 300), f"{name}.holdoff_ms", 0, 60000)),
+            "action": validate_gpi_action(inp.get("action"), f"{name}.action"),
+        }
+        if v["id"] in ids:
+            raise ValidationError(f"{name}.id '{v['id']}' is used twice")
+        ids.add(v["id"])
+        line = (v["pull"], v["active_low"], v["debounce_ms"])
+        if line_cfg.setdefault(pin, line) != line:
+            raise ValidationError(f"inputs on GPIO {pin} must use the same pull, active level "
+                                  "and debounce")
+        out.append(v)
+    return {"enabled": bool(g.get("enabled", True)), "inputs": out}
 
 
 def validate_item(item: Any, idx: int) -> dict:
@@ -308,6 +375,9 @@ class Store:
         for pl in self.playlists.values():
             if pl["end_action"].get("playlist") == old:
                 pl["end_action"]["playlist"] = new
+        for inp in self.settings["gpi"]["inputs"]:
+            if inp["action"].get("playlist") == old:
+                inp["action"]["playlist"] = new
 
     def remove_media_references(self, name: str) -> list[str]:
         touched = []

@@ -188,7 +188,8 @@ Send only the fields to change; nested objects are merged.
   "default_fit": "contain",
   "background_color": "#000000",
   "output": {"mode": "auto"},
-  "audio": {"enabled": true, "device": "auto", "volume": 100}
+  "audio": {"enabled": true, "device": "auto", "volume": 100},
+  "gpi": {"enabled": true, "inputs": []}
 }
 ```
 
@@ -204,6 +205,58 @@ Send only the fields to change; nested objects are merged.
 Changing `output.*`, `audio.enabled` or `audio.device` restarts the renderer (about 1-2 s of black), then resumes the current item.
 
 On the Pi's default renderer, the `output` object in `/api/status` also includes `frames_presented` (display updates), `commit_failures`, and `display.modes`.
+
+## GPI triggers
+
+Contact closures on GPIO pins that fire actions. The inputs are stored in settings (`gpi`); these endpoints add live state.
+
+### `GET /api/gpi`
+
+```json
+{
+  "enabled": true,
+  "available": true,
+  "chip": "/dev/gpiochip0",
+  "error": null,
+  "inputs": [
+    {"id": "b1", "name": "Lobby button", "pin": 17, "header_pin": 11, "fire_on": "close",
+     "pull": "up", "active_low": true, "debounce_ms": 20, "holdoff_ms": 300,
+     "action": {"type": "play", "playlist": "lobby", "index": 0, "transition": null},
+     "state": "open", "error": null, "count": 3, "last": 1789760000.1, "last_error": null}
+  ],
+  "pins": [{"gpio": 17, "header_pin": 11, "note": null}],
+  "ground_pins": [6, 9, 14, 20, 25, 30, 34, 39]
+}
+```
+
+`state` is the live contact state (`open`/`closed`). `count`, `last` and `last_error` describe firings since PiPlayer started. `available: false` with an `error` means GPIO can't be used (for example, not on a Pi).
+
+### `PUT /api/gpi`
+
+Replaces the configuration: `{"enabled": true, "inputs": [...]}`. Returns the same shape as `GET`.
+
+| Input field | Meaning |
+|---|---|
+| `id` | Stable id (generated if omitted). |
+| `name` | Label. |
+| `pin` | BCM GPIO number, 0-27 (not the header pin number). |
+| `fire_on` | `close` (default), `open` or `both`. |
+| `pull` | `up` (default: contact to GND), `down`, or `none`. |
+| `active_low` | Whether a low pin counts as "closed". Defaults to `true`, or `false` with `pull: down`. |
+| `debounce_ms` | Kernel debounce, 0-1000 (default 20). |
+| `holdoff_ms` | Ignore re-triggers for this long after firing, 0-60000 (default 300). |
+| `action.type` | `play`, `next`, `previous`, `stop`, `pause`, `resume`, `toggle` or `loop_item`. |
+| `action.playlist`, `action.index` | For `play`. |
+| `action.transition` | For `play`, `next`, `previous` and `stop` (`null` = the usual transition). |
+| `action.mode` | For `loop_item`: `toggle` (default), `on` or `off`. |
+
+Inputs sharing a pin must use the same `pull`, `active_low` and `debounce_ms`.
+
+### `POST /api/gpi/{id}/fire`
+
+Runs the input's action now, as if it had been triggered. This is useful for testing, and GET works too.
+
+The WebSocket also sends `{"type": "gpi", "pin": 17, "event": "close"}` on every edge, and `{"type": "gpi", "input": "b1", "fired": true, "source": "GPIO 17 close"}` when an input fires.
 
 ## System
 

@@ -14,6 +14,7 @@
     <button data-tab="now" class="active">Now Playing</button>
     <button data-tab="playlists">Playlists</button>
     <button data-tab="media">Media</button>
+    <button data-tab="triggers">Triggers</button>
     <button data-tab="settings">Settings</button>
     <button data-tab="api">API</button>
   </nav>
@@ -93,6 +94,20 @@
     <div class="card">
       <div class="pane-head"><h3>Library</h3><span id="media-count" class="muted small"></span></div>
       <div id="media-grid" class="media-grid"></div>
+    </div>
+  </section>
+
+  <!-- TRIGGERS (GPI) -->
+  <section id="tab-triggers" class="tab">
+    <div class="card">
+      <div class="pane-head"><h3>GPI triggers</h3><span id="gpi-status" class="muted small"></span></div>
+      <p class="hint small muted">Wire a switch or relay contact between a GPIO pin and any GND pin (header pins 6, 9, 14, 20, 25, 30, 34 or 39). The Pi's internal pull-up holds the pin high; closing the contact pulls it low and counts as <em>closes</em>. For 3.3&nbsp;V logic outputs, use pull-down and active high under Advanced. Never connect 5&nbsp;V to a GPIO pin.</p>
+      <label class="check"><input type="checkbox" id="gpi-enabled"> Watch GPIO inputs</label>
+    </div>
+    <div id="gpi-list"></div>
+    <div class="card editor-actions" style="margin-top:0">
+      <div><button id="gpi-add" class="btn">+ Add input</button></div>
+      <div><span id="gpi-dirty" class="dirty-note"></span><button id="gpi-revert" class="btn">Revert</button><button id="gpi-save" class="btn primary">Save triggers</button></div>
     </div>
   </section>
 

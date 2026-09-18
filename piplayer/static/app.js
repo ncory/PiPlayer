@@ -3,7 +3,8 @@
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const S = { status: null, playlists: [], media: [], settings: null, system: null,
-            selected: null, draft: null, dirty: false, cueTransition: null };
+            selected: null, draft: null, dirty: false, cueTransition: null,
+            gpi: null, gpiDraft: null, gpiDirty: false };
 
 // ---------------------------------------------------------------- helpers
 function h(tag, attrs = {}, ...kids) {
@@ -58,10 +59,11 @@ function connect() {
     if (m.type === "status") { S.status = m.status; renderNow(); }
     else if (m.type === "media") loadMedia();
     else if (m.type === "playlist") loadPlaylists();
-    else if (m.type === "settings") loadSettings();
+    else if (m.type === "settings") { loadSettings(); loadGpi(); }
+    else if (m.type === "gpi") onGpiEvent(m);
   };
 }
-async function loadAll() { await Promise.all([loadPlaylists(), loadMedia(), loadSettings(), loadSystem()]); }
+async function loadAll() { await Promise.all([loadPlaylists(), loadMedia(), loadSettings(), loadSystem(), loadGpi()]); }
 async function loadPlaylists() {
   S.playlists = await api("GET", "/api/playlists");
   renderQuick(); renderPlaylistList(); renderNow();
@@ -544,6 +546,91 @@ function renderSettings() {
     document.activeElement?.blur(); await loadSettings();
   };
 }
+
+// ---------------------------------------------------------------- triggers
+const GPI_ACTIONS = [["play", "Play playlist"], ["next", "Next item"], ["previous", "Previous item"], ["stop", "Stop"],
+  ["pause", "Pause"], ["resume", "Resume"], ["toggle", "Pause / resume"], ["loop_item", "Loop item"]];
+const GPI_FIELDS = ["id", "name", "pin", "fire_on", "pull", "active_low", "debounce_ms", "holdoff_ms", "action"];
+
+async function loadGpi() {
+  try { S.gpi = await api("GET", "/api/gpi"); } catch { return; }
+  if (!S.gpiDirty) S.gpiDraft = { enabled: S.gpi.enabled, inputs: S.gpi.inputs.map((i) => Object.fromEntries(GPI_FIELDS.map((k) => [k, clone(i[k])]))) };
+  renderGpi();
+}
+let gpiReload = null;
+function onGpiEvent(m) {
+  clearTimeout(gpiReload); gpiReload = setTimeout(loadGpi, 150);
+  if (m.fired) S.gpiFlash = m.input;  // highlighted by the re-render below
+  if (m.error) toast(`Trigger: ${m.error}`, true);
+}
+function gpiDirty() { S.gpiDirty = true; $("#gpi-dirty").textContent = "Unsaved changes"; }
+
+function renderGpi() {
+  const g = S.gpi, d = S.gpiDraft; if (!g || !d) return;
+  $("#gpi-status").textContent = g.error ? g.error : g.available ? `Watching ${g.chip}` : d.enabled ? "Idle (no inputs)" : "Disabled";
+  $("#gpi-status").style.color = g.error ? "var(--err)" : "";
+  $("#gpi-enabled").checked = d.enabled;
+  $("#gpi-dirty").textContent = S.gpiDirty ? "Unsaved changes" : "";
+  const live = Object.fromEntries(g.inputs.map((i) => [i.id, i]));
+  const pinOpts = g.pins.map((p) => [p.gpio, `GPIO ${p.gpio} — pin ${p.header_pin}${p.note ? ` (${p.note})` : ""}`]);
+  const list = $("#gpi-list"); list.replaceChildren();
+  setTimeout(() => { S.gpiFlash = null; }, 0);
+  if (!d.inputs.length) list.append(h("div", { class: "card muted" }, "No inputs yet. Add one to fire a playlist from a button or contact closure."));
+  d.inputs.forEach((inp, idx) => {
+    const L = live[inp.id] || {};
+    const sel = (opts, val, on) => h("select", { onchange: (e) => { on(e.target.value); gpiDirty(); } },
+      ...opts.map(([v, l]) => h("option", { value: v, selected: String(val) === String(v) }, l)));
+    const num = (val, on, attrs = {}) => h("input", { type: "number", value: val, ...attrs, oninput: (e) => { on(Number(e.target.value)); gpiDirty(); } });
+    const a = inp.action;
+    const setType = (t) => { inp.action = { type: t, ...(t === "play" ? { playlist: S.playlists[0]?.id, index: 0 } : {}), ...(t === "loop_item" ? { mode: "toggle" } : {}) }; renderGpi(); };
+    const actionBits = [];
+    if (a.type === "play") {
+      const pl = S.playlists.find((p) => p.id === a.playlist);
+      actionBits.push(sel([["", "— playlist —"], ...S.playlists.map((p) => [p.id, p.name])], a.playlist || "", (v) => { a.playlist = v; a.index = 0; renderGpi(); }));
+      actionBits.push(h("span", { class: "small muted" }, "from item"),
+        sel((pl?.items || [{ media: "1" }]).map((it, i) => [i, `${i + 1}. ${it.media}`]), a.index || 0, (v) => { a.index = Number(v); }));
+    }
+    if (["play", "next", "previous", "stop"].includes(a.type))
+      actionBits.push(h("span", { class: "small muted" }, "transition"), transitionEditor(a.transition, { inherit: "Default", onchange: (v) => { a.transition = v; gpiDirty(); } }).el);
+    if (a.type === "loop_item") actionBits.push(sel([["toggle", "Toggle"], ["on", "On"], ["off", "Off"]], a.mode, (v) => { a.mode = v; }));
+    const stateTxt = L.error ? "error" : L.state || "—";
+    list.append(h("div", { class: "card gpi-row" + (S.gpiFlash === inp.id ? " flash" : ""), "data-gpi": inp.id },
+      h("div", { class: "row" },
+        h("label", { class: "field" }, h("span", {}, "Name"), h("input", { type: "text", value: inp.name, style: { width: "180px" }, oninput: (e) => { inp.name = e.target.value; gpiDirty(); } })),
+        h("label", { class: "field" }, h("span", {}, "Input"), sel(pinOpts, inp.pin, (v) => { inp.pin = Number(v); })),
+        h("label", { class: "field" }, h("span", {}, "Fires when contact"), sel([["close", "closes"], ["open", "opens"], ["both", "closes or opens"]], inp.fire_on, (v) => { inp.fire_on = v; })),
+        h("div", { class: "gpi-meta" },
+          h("span", { class: "pill " + (L.error ? "err" : L.state === "closed" ? "closed" : ""), title: L.error || "Live input state" }, stateTxt),
+          h("span", { title: L.last ? new Date(L.last * 1000).toLocaleString() : "" }, L.count ? `fired ${L.count}×${L.last ? " · " + new Date(L.last * 1000).toLocaleTimeString() : ""}` : "not fired"),
+          h("button", { class: "btn small", title: "Run the action now", disabled: S.gpiDirty, onclick: () => act(() => api("POST", `/api/gpi/${enc(inp.id)}/fire`), "Fired") }, "Test"),
+          h("button", { class: "icon-btn", title: "Remove", onclick: () => { d.inputs.splice(idx, 1); gpiDirty(); renderGpi(); } }, "✕"))),
+      h("div", { class: "row" },
+        h("label", { class: "field" }, h("span", {}, "Action"), sel(GPI_ACTIONS, a.type, setType)),
+        h("span", { class: "trans" }, ...actionBits)),
+      L.last_error ? h("div", { class: "error-line" }, "Last run failed: " + L.last_error) : null,
+      L.error ? h("div", { class: "error-line" }, `GPIO ${inp.pin}: ${L.error}`) : null,
+      h("details", {},
+        h("summary", {}, "Advanced"),
+        h("div", { class: "row" },
+          h("label", { class: "field" }, h("span", {}, "Pull resistor"), sel([["up", "Pull-up (contact to GND)"], ["down", "Pull-down"], ["none", "None (external)"]], inp.pull, (v) => { inp.pull = v; inp.active_low = v !== "down"; renderGpi(); })),
+          h("label", { class: "field" }, h("span", {}, "Closed means"), sel([["true", "pin low"], ["false", "pin high"]], String(inp.active_low), (v) => { inp.active_low = v === "true"; })),
+          h("label", { class: "field" }, h("span", {}, "Debounce (ms)"), num(inp.debounce_ms, (v) => (inp.debounce_ms = v), { min: 0, max: 1000 })),
+          h("label", { class: "field" }, h("span", {}, "Hold-off (ms)"), num(inp.holdoff_ms, (v) => (inp.holdoff_ms = v), { min: 0, max: 60000, title: "Ignore re-triggers for this long" }))))));
+  });
+}
+$("#gpi-enabled").onchange = (e) => { S.gpiDraft.enabled = e.target.checked; gpiDirty(); };
+$("#gpi-add").onclick = () => {
+  const used = new Set(S.gpiDraft.inputs.map((i) => i.pin));
+  const pin = [17, 27, 22, 23, 24, 25, 5, 6, 16, 26].find((p) => !used.has(p)) ?? 17;
+  S.gpiDraft.inputs.push({ id: Math.random().toString(16).slice(2, 8), name: `Button ${S.gpiDraft.inputs.length + 1}`, pin, fire_on: "close", pull: "up",
+    active_low: true, debounce_ms: 20, holdoff_ms: 300, action: { type: "play", playlist: S.playlists[0]?.id, index: 0 } });
+  gpiDirty(); renderGpi();
+};
+$("#gpi-revert").onclick = () => { S.gpiDirty = false; loadGpi(); };
+$("#gpi-save").onclick = async () => {
+  S.gpi = await act(() => api("PUT", "/api/gpi", S.gpiDraft), "Triggers saved");
+  S.gpiDirty = false; S.gpiDraft = null; await loadGpi();
+};
 
 // -------------------------------------------------------------------- docs
 async function loadDoc() {
