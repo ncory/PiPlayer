@@ -1,0 +1,25 @@
+[Unit]
+Description=PiPlayer network-controlled video player
+After=network-online.target sound.target systemd-udev-settle.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=piplayer
+Group=piplayer
+SupplementaryGroups=video render audio
+WorkingDirectory=/opt/piplayer
+Environment=PYTHONUNBUFFERED=1
+Environment=PIPLAYER_DATA=/var/lib/piplayer
+Environment=PIPLAYER_PORT=@PORT@
+Environment=PIPLAYER_BACKEND=gst
+Environment=PIPLAYER_SINK=kms
+ExecStart=/usr/bin/python3 -m piplayer
+# bind to port 80 without running as root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+Restart=always
+RestartSec=3
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

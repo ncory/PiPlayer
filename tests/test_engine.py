@@ -1,0 +1,308 @@
+"""Engine behaviour against the simulated backend (real time, short media)."""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+
+import pytest
+from PIL import Image
+
+from piplayer import backend_sim
+from piplayer.backend_sim import SimBackend
+from piplayer.config import Store, ValidationError
+from piplayer.engine import Engine
+from piplayer.media import MediaLibrary
+
+HW = {"model": None, "family": None, "is_pi": False, "memory_mb": None}
+CUT = {"type": "cut"}
+
+
+@pytest.fixture
+def data(tmp_path: Path) -> Path:
+    media = tmp_path / "media"
+    media.mkdir()
+    for name, color in (("red.png", "red"), ("green.png", "green"), ("blue.jpg", "blue")):
+        Image.new("RGB", (64, 36), color).save(media / name)
+    for name in ("clip.mp4", "clip2.mp4", "old-4x3.mp4"):
+        (media / name).write_bytes(b"not really a video")
+    return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def short_videos(monkeypatch):
+    monkeypatch.setattr(backend_sim, "DEFAULT_VIDEO_SECONDS", 1.0)
+
+
+async def make_engine(data: Path, playlists: list[dict], default: str | None = None,
+                      autoplay: bool = True, **settings) -> Engine:
+    store = Store(data / "state.json")
+    for pl in playlists:
+        if pl["id"] in store.playlists:
+            store.replace_playlist(pl["id"], pl)
+        else:
+            store.create_playlist(pl)
+    store.update_settings({"default_playlist": default or playlists[0]["id"],
+                           "default_transition": CUT, **settings})
+    lib = MediaLibrary(data / "media", data / "cache", HW)
+    eng = Engine(store, lib, lambda s, h, e: SimBackend(s, h, e, load_delay=0.05), HW)
+    await eng.start(autoplay=autoplay)
+    return eng
+
+
+def items(*names, duration=0.5, **kw):
+    return [{"media": n, "duration": duration, **kw} for n in names]
+
+
+async def wait_for(pred, timeout=5.0):
+    end = asyncio.get_running_loop().time() + timeout
+    while not pred():
+        if asyncio.get_running_loop().time() > end:
+            raise AssertionError("condition not reached")
+        await asyncio.sleep(0.02)
+
+
+async def test_autoplay_and_loop(data):
+    eng = await make_engine(data, [{"id": "default", "items": items("red.png", "green.png")}])
+    await wait_for(lambda: eng.state == "playing" and eng.current is not None)
+    assert eng.target.index == 0
+    await wait_for(lambda: eng.target.index == 1)
+    await wait_for(lambda: eng.target.index == 0)  # looped
+    assert len(eng.backend.layers) <= 3
+    await eng.shutdown()
+
+
+async def test_dissolve_timing(data):
+    eng = await make_engine(data, [{
+        "id": "default", "items": items("red.png", "green.png", duration=1.0),
+        "transition": {"type": "dissolve", "duration": 0.4}}])
+    await wait_for(lambda: eng.current is not None)
+    a = eng.current
+    await wait_for(lambda: eng.current is not a, timeout=3)
+    b = eng.current
+    # B starts exactly when A has 0.4 s left
+    assert b.start_time == pytest.approx(a.start_time + 0.6, abs=0.01)
+    sim: SimBackend = eng.backend
+    assert sim.alpha(b, b.start_time + 0.2) == pytest.approx(0.5, abs=0.01)
+    assert sim.alpha(b, b.start_time + 0.5) == pytest.approx(1.0)
+    # full-frame incoming picture: outgoing stays opaque underneath
+    assert sim.alpha(a, b.start_time + 0.2) == pytest.approx(1.0)
+    await wait_for(lambda: a.state == "removed", timeout=2)
+    await eng.shutdown()
+
+
+async def test_dissolve_to_letterboxed_fades_old_out(data):
+    eng = await make_engine(data, [{
+        "id": "default", "items": [{"media": "clip.mp4"}, {"media": "old-4x3.mp4"}],
+        "transition": {"type": "dissolve", "duration": 0.4}}])
+    await wait_for(lambda: eng.current is not None)
+    a = eng.current
+    await wait_for(lambda: eng.current is not a, timeout=3)
+    b = eng.current
+    assert not b.full_frame
+    assert eng.backend.alpha(a, b.start_time + 0.2) == pytest.approx(0.5, abs=0.01)
+    await eng.shutdown()
+
+
+async def test_dip_through_color(data):
+    eng = await make_engine(data, [{
+        "id": "default", "items": items("red.png", "green.png", duration=1.0),
+        "transition": {"type": "dip", "duration": 0.6, "color": "#ffffff"}}])
+    await wait_for(lambda: eng.current is not None)
+    a = eng.current
+    await wait_for(lambda: eng.current is not a, timeout=3)
+    b = eng.current
+    sim: SimBackend = eng.backend
+    t0 = a.start_time + 0.4  # A.end - 0.6
+    assert b.start_time == pytest.approx(t0 + 0.3, abs=0.01)  # new item starts at the midpoint
+    assert sim.dip_color == "#ffffff"
+    assert [round(t - t0, 3) for t, _ in sim.dip_kfs] == [0.0, 0.3, 0.6]
+    await eng.shutdown()
+
+
+async def test_videos_play_to_their_duration(data):
+    eng = await make_engine(data, [{"id": "default", "items": [
+        {"media": "clip.mp4"}, {"media": "clip2.mp4"}]}])
+    await wait_for(lambda: eng.current is not None)
+    a = eng.current
+    assert eng.duration(a) == 1.0
+    await wait_for(lambda: eng.current is not a, timeout=3)
+    assert eng.current.start_time == pytest.approx(a.start_time + 1.0, abs=0.01)
+    await eng.shutdown()
+
+
+async def test_end_stop(data):
+    eng = await make_engine(data, [{"id": "default", "items": items("red.png", duration=1.0),
+                                    "end_action": "stop"}])
+    await wait_for(lambda: eng.state == "playing" and eng.current)
+    layer = eng.current
+    await wait_for(lambda: eng.state == "stopped", timeout=3)
+    # the fade-out was scheduled for the item's end, not when it was requested
+    assert eng.outgoing and eng.outgoing[0][1] >= layer.start_time + 1.0
+    await wait_for(lambda: not eng.backend.layers, timeout=2)
+    await eng.shutdown()
+
+
+async def test_end_hold(data):
+    eng = await make_engine(data, [{"id": "default", "items": items("red.png", duration=0.3),
+                                    "end_action": "hold"}])
+    await wait_for(lambda: eng.state == "held", timeout=3)
+    assert eng.current is not None and eng.current.state == "playing"
+    await eng.shutdown()
+
+
+async def test_end_goto(data):
+    eng = await make_engine(data, [
+        {"id": "intro", "items": items("red.png", duration=0.3),
+         "end_action": {"type": "goto", "playlist": "main"}},
+        {"id": "main", "items": items("green.png", "blue.jpg", duration=0.3)},
+    ], default="intro")
+    await wait_for(lambda: eng.target and eng.target.playlist == "main", timeout=3)
+    assert eng.status()["playlist"]["id"] == "main"
+    await eng.shutdown()
+
+
+async def test_missing_media_is_skipped(data):
+    eng = await make_engine(data, [{"id": "default",
+                                    "items": items("red.png", "gone.png", "green.png", duration=0.3)}])
+    seen = set()
+    for _ in range(100):
+        if eng.current:
+            seen.add(eng.current.source.media)
+        if "green.png" in seen:
+            break
+        await asyncio.sleep(0.02)
+    assert "green.png" in seen
+    assert "gone.png" in (eng.last_error or "")
+    await eng.shutdown()
+
+
+async def test_all_missing_stops(data):
+    eng = await make_engine(data, [{"id": "default", "items": items("a.png", "b.png")}],
+                            autoplay=False)
+    await eng.play("default")
+    await wait_for(lambda: eng.state == "stopped", timeout=3)
+    await asyncio.sleep(0.3)
+    assert eng.state == "stopped"
+    await eng.shutdown()
+
+
+async def test_pause_freezes_position(data):
+    eng = await make_engine(data, [{"id": "default", "items": items("red.png", "green.png",
+                                                                     duration=1.0)}])
+    await wait_for(lambda: eng.current is not None)
+    await asyncio.sleep(0.3)
+    eng.pause()
+    layer = eng.current
+    pos = layer.position(eng.backend.now())
+    await asyncio.sleep(1.2)  # longer than the item: must not advance
+    assert eng.current is layer and eng.state == "paused"
+    assert layer.position(eng.backend.now()) == pytest.approx(pos, abs=0.01)
+    eng.resume()
+    await wait_for(lambda: eng.current is not layer, timeout=2)
+    await eng.shutdown()
+
+
+async def test_manual_transport(data):
+    eng = await make_engine(data, [{"id": "default",
+                                    "items": items("red.png", "green.png", "blue.jpg", duration=30)}])
+    await wait_for(lambda: eng.current is not None)
+    await eng.next()
+    await wait_for(lambda: eng.target.index == 1)
+    await eng.previous()
+    await wait_for(lambda: eng.target.index == 0)
+    await eng.previous()  # wraps
+    await wait_for(lambda: eng.target.index == 2)
+    await eng.play("default", 1, {"type": "dissolve", "duration": 0.2, "color": "#000000"})
+    await wait_for(lambda: eng.target.index == 1)
+    await eng.stop()
+    assert eng.state == "stopped"
+    await eng.play()  # resumes last playlist
+    await wait_for(lambda: eng.state == "playing")
+    await eng.shutdown()
+
+
+async def test_rapid_commands_bound_layers(data):
+    eng = await make_engine(data, [{"id": "default",
+                                    "items": items("red.png", "green.png", "blue.jpg", duration=30),
+                                    "transition": {"type": "dissolve", "duration": 1}}])
+    await wait_for(lambda: eng.current is not None)
+    for _ in range(10):
+        await eng.next()
+    await asyncio.sleep(0.3)
+    live = [lyr for lyr in eng.backend.layers.values()]
+    assert len(live) <= 3
+    await eng.shutdown()
+
+
+async def test_edit_current_playlist(data):
+    eng = await make_engine(data, [{"id": "default",
+                                    "items": items("red.png", "green.png", "blue.jpg", duration=0.6)}])
+    await wait_for(lambda: eng.current is not None)
+    pl = eng.store.get_playlist("default")
+    # remove the playing item; playback continues with what is now at its spot
+    eng.store.replace_playlist("default", {**pl, "items": pl["items"][1:]})
+    await wait_for(lambda: eng.current and eng.current.source.media == "green.png", timeout=3)
+    # rename the playlist while it plays
+    eng.store.replace_playlist("default", {**eng.store.get_playlist("default"), "id": "renamed"})
+    assert eng.target.playlist == "renamed"
+    assert eng.store.settings["default_playlist"] == "renamed"
+    await eng.shutdown()
+
+
+def test_validation(tmp_path):
+    store = Store(tmp_path / "state.json")
+    with pytest.raises(ValidationError):
+        store.create_playlist({"id": "Bad Id"})
+    with pytest.raises(ValidationError):
+        store.create_playlist({"id": "x", "items": [{"media": "a.exe"}]})
+    with pytest.raises(ValidationError):
+        store.create_playlist({"id": "x", "transition": {"type": "wipe"}})
+    with pytest.raises(ValidationError):
+        store.update_settings({"output": {"rotation": 45}})
+    pl = store.create_playlist({"id": "x", "items": ["a.png"], "transition": "dip"})
+    assert pl["transition"] == {"type": "dip", "duration": 1.0, "color": "#000000"}
+    assert pl["items"][0]["uid"]
+    # persisted
+    assert "x" in Store(tmp_path / "state.json").playlists
+
+
+async def test_live_position_offset(data):
+    eng = await make_engine(data, [{"id": "default",
+                                    "items": items("red.png", "green.png", duration=30)}])
+    await wait_for(lambda: eng.current is not None)
+    layer = eng.current
+    uid = eng.target.uid
+    assert layer.offset == (0, 0) and layer.full_frame
+    eng.pause()
+    eng.store.update_item("default", uid, {"offset_x": 40, "offset_y": -12})
+    assert layer.offset == (40, -12)  # applied live, while paused
+    assert not layer.full_frame  # moved: background shows at the edges
+    assert eng.store.get_playlist("default")["items"][0]["offset_x"] == 40
+    # a newly loaded layer for the item starts at the saved offset
+    eng.resume()
+    await eng.play("default", 0, CUT)
+    await wait_for(lambda: eng.current is not layer)
+    assert eng.current.offset == (40, -12)
+    with pytest.raises(ValidationError):
+        eng.store.update_item("default", uid, {"offset_x": "left"})
+    await eng.shutdown()
+
+
+async def test_loop_item(data):
+    eng = await make_engine(data, [{"id": "default", "items": [
+        {"media": "clip.mp4"}, {"media": "red.png", "duration": 0.3}]}])
+    await wait_for(lambda: eng.current is not None)
+    eng.set_loop_item(True)
+    first = eng.current
+    await wait_for(lambda: eng.current is not first, timeout=3)
+    assert eng.target.index == 0 and eng.current.source.media == "clip.mp4"  # restarted
+    eng.set_loop_item(False)
+    await wait_for(lambda: eng.target.index == 1, timeout=3)
+    eng.set_loop_item(True)
+    img = eng.current
+    await asyncio.sleep(0.8)  # well past the image's 0.3 s
+    assert eng.current is img and eng.state == "playing"
+    eng.set_loop_item(False)
+    await wait_for(lambda: eng.current is not img, timeout=3)
+    await eng.shutdown()

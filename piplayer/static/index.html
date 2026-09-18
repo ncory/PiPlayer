@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PiPlayer</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23c2185b'/><path d='M12 9l12 7-12 7z' fill='white'/></svg>">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">▶</span> PiPlayer</div>
+  <nav id="tabs">
+    <button data-tab="now" class="active">Now Playing</button>
+    <button data-tab="playlists">Playlists</button>
+    <button data-tab="media">Media</button>
+    <button data-tab="settings">Settings</button>
+    <button data-tab="api">API</button>
+  </nav>
+  <div id="conn" class="conn" title="Connection to player">●</div>
+</header>
+
+<main>
+  <!-- NOW PLAYING -->
+  <section id="tab-now" class="tab active">
+    <div class="now-grid">
+      <div class="card monitor">
+        <div class="preview-wrap">
+          <img id="preview" alt="">
+          <div id="preview-off" class="preview-off">Preview paused</div>
+        </div>
+        <div class="now-meta">
+          <div class="now-line">
+            <span id="st-state" class="badge">…</span>
+            <span id="st-playlist" class="now-playlist"></span>
+          </div>
+          <div id="st-item" class="now-item">—</div>
+          <div class="progress"><div id="st-bar"></div></div>
+          <div class="now-times"><span id="st-pos">0:00</span><span id="st-next" class="muted"></span><span id="st-dur">0:00</span></div>
+        </div>
+        <div class="transport">
+          <button id="t-prev" class="tbtn" title="Previous">⏮</button>
+          <button id="t-play" class="tbtn big" title="Play / Pause">▶</button>
+          <button id="t-stop" class="tbtn" title="Stop">⏹</button>
+          <button id="t-next" class="tbtn" title="Next">⏭</button>
+          <button id="t-loop" class="tbtn toggle" title="Loop the current item instead of advancing">🔁</button>
+        </div>
+        <div class="cue-row">
+          <label>Transition for manual cues</label>
+          <div id="cue-transition"></div>
+        </div>
+        <label class="check small"><input type="checkbox" id="preview-toggle" checked> Live preview</label>
+      </div>
+
+      <div class="side">
+        <div class="card">
+          <h3>Playlists</h3>
+          <div id="quick" class="quick"></div>
+        </div>
+        <div class="card">
+          <h3 id="cur-title">Current playlist</h3>
+          <ol id="cur-items" class="cur-items"></ol>
+        </div>
+        <div class="card">
+          <h3>Player</h3>
+          <dl id="sys" class="sys"></dl>
+          <div id="st-error" class="error-line"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PLAYLISTS -->
+  <section id="tab-playlists" class="tab">
+    <div class="split">
+      <aside class="card list-pane">
+        <div class="pane-head"><h3>Playlists</h3><button id="pl-new" class="btn small">+ New</button></div>
+        <ul id="pl-list" class="pl-list"></ul>
+      </aside>
+      <div id="pl-editor" class="card editor"><p class="muted">Select or create a playlist.</p></div>
+    </div>
+  </section>
+
+  <!-- MEDIA -->
+  <section id="tab-media" class="tab">
+    <div class="card">
+      <div id="drop" class="drop">
+        <p><strong>Drop videos or images here</strong> or <label class="linklike">browse<input type="file" id="file-input" multiple hidden accept="video/*,image/*,.mkv,.ts"></label></p>
+        <p class="muted small">Pi 3: H.264, up to 1920×1080, 30 fps recommended. Images are scaled to the output automatically.</p>
+        <div id="uploads"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="pane-head"><h3>Library</h3><span id="media-count" class="muted small"></span></div>
+      <div id="media-grid" class="media-grid"></div>
+    </div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section id="tab-settings" class="tab">
+    <form id="settings-form" class="card settings" autocomplete="off"></form>
+  </section>
+
+  <!-- API -->
+  <section id="tab-api" class="tab">
+    <article id="api-doc" class="card doc"></article>
+  </section>
+</main>
+
+<dialog id="picker">
+  <form method="dialog" class="picker">
+    <h3>Add media</h3>
+    <div id="picker-grid" class="media-grid pick"></div>
+    <div class="dialog-actions">
+      <button value="cancel" class="btn ghost">Cancel</button>
+      <button id="picker-ok" value="ok" class="btn primary">Add selected</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="positioner">
+  <div class="positioner">
+    <div class="pane-head"><h3 id="pos-title">Position</h3><span id="pos-state" class="muted small"></span></div>
+    <div class="preview-wrap pos-preview" id="pos-drag" title="Drag to move the item">
+      <img id="pos-img" alt="" draggable="false">
+    </div>
+    <div class="pos-controls">
+      <div class="nudge">
+        <span></span><button type="button" class="btn" data-d="0,-1" title="Up (Shift: 10 px)">↑</button><span></span>
+        <button type="button" class="btn" data-d="-1,0" title="Left (Shift: 10 px)">←</button>
+        <button type="button" class="btn" id="pos-center" title="Reset to 0, 0">⌖</button>
+        <button type="button" class="btn" data-d="1,0" title="Right (Shift: 10 px)">→</button>
+        <span></span><button type="button" class="btn" data-d="0,1" title="Down (Shift: 10 px)">↓</button><span></span>
+      </div>
+      <div class="pos-fields">
+        <label class="field"><span>X offset (px)</span><input type="number" id="pos-x" step="1"></label>
+        <label class="field"><span>Y offset (px)</span><input type="number" id="pos-y" step="1"></label>
+        <p class="hint small muted">Drag the picture, use the arrows (hold Shift for 10 px) or type values. Changes apply to the screen immediately and are saved.</p>
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" id="pos-pause" class="btn">⏸ Pause</button>
+      <button type="button" id="pos-done" class="btn primary">Done</button>
+    </div>
+  </div>
+</dialog>
+
+<div id="toast" class="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
