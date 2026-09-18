@@ -175,8 +175,8 @@ function renderSys() {
     ["Device", s.hardware?.model || "not a Raspberry Pi"],
     ["Renderer", r.backend + (r.sink ? ` (${r.sink})` : "")],
     ["Display", r.display ? `${r.display.connector} ${r.display.mode || ""}${r.display.connected ? "" : " (disconnected)"}` : "–"],
-    ["Compositing", r.render_size ? `${r.render_size.join("×")} @ ${r.fps} fps` : "–"],
-    ["Dropped frames", r.frames_dropped != null ? `${r.frames_dropped} of ${r.frames_rendered}` : "–"],
+    ["Output", r.render_size ? `${r.render_size.join("×")} @ ${r.fps} ${r.backend === "kms" ? "Hz (hardware planes)" : "fps"}` : "–"],
+    ["Dropped frames", r.frames_dropped != null ? `${r.frames_dropped} of ${r.frames_rendered + r.frames_dropped}` : "–"],
     ["Audio", r.audio_device || "off"],
     ["Temperature", hl.temperature_c != null ? hl.temperature_c + " °C" : "–"],
     ["Throttling", hl.throttled ? (hl.throttled.under_voltage_now ? "UNDER-VOLTAGE" : hl.throttled.throttled_now ? "throttled" : hl.throttled.under_voltage_since_boot ? "under-voltage since boot" : "none") : "–"],
@@ -494,6 +494,10 @@ function renderSettings() {
   const outputs = S.system?.outputs || [];
   const modes = [...new Set(outputs.flatMap((o) => o.modes || []))].filter((m) => /^\d+x\d+$/.test(m));
   const sizes = [["auto", "Auto (match display, max 1080p)"], ...["1920x1080", "1280x720", "1080x1920", ...modes].filter((v, i, a) => a.indexOf(v) === i).map((m) => [m, m])];
+  const renderer = S.system?.renderer || {};
+  const kmsMode = renderer.backend === "kms";
+  const dispModes = [["auto", "Auto (display's resolution; 30 Hz on a Pi 3)"], ...(renderer.display?.modes || []).map((m) => [m, m.replace("@", " @ ") + " Hz"])];
+  if (s.output.mode && !dispModes.some(([v]) => v === s.output.mode)) dispModes.push([s.output.mode, s.output.mode]);
   f.replaceChildren(
     h("fieldset", {}, h("legend", {}, "Playback"),
       h("div", { class: "row" },
@@ -509,10 +513,13 @@ function renderSettings() {
           h("input", { type: "color", name: "background_color", value: s.background_color })))),
     h("fieldset", {}, h("legend", {}, "Output"),
       h("div", { class: "row" },
-        h("label", { class: "field" }, h("span", {}, "Compositing resolution"), sel("render_size", sizes, s.output.render_size)),
-        h("label", { class: "field" }, h("span", {}, "Frame rate"), sel("fps", [[24, "24"], [25, "25"], [30, "30"], [50, "50"], [60, "60"]], s.output.fps)),
-        h("label", { class: "field" }, h("span", {}, "Rotation"), sel("rotation", [[0, "0°"], [90, "90° (portrait)"], [180, "180°"], [270, "270° (portrait)"]], s.output.rotation))),
-      h("p", { class: "hint" }, "The HDMI mode itself follows the display's preferred mode; video is composited at this resolution and scaled to fit. Changing output settings briefly restarts playback.")),
+        h("label", { class: "field" }, h("span", {}, "Display mode"), sel("mode", dispModes, s.output.mode || "auto")),
+        kmsMode ? null : h("label", { class: "field" }, h("span", {}, "Compositing resolution"), sel("render_size", sizes, s.output.render_size)),
+        kmsMode ? null : h("label", { class: "field" }, h("span", {}, "Frame rate"), sel("fps", [[24, "24"], [25, "25"], [30, "30"], [50, "50"], [60, "60"]], s.output.fps)),
+        kmsMode ? null : h("label", { class: "field" }, h("span", {}, "Rotation"), sel("rotation", [[0, "0°"], [90, "90° (portrait)"], [180, "180°"], [270, "270° (portrait)"]], s.output.rotation))),
+      h("p", { class: "hint" }, kmsMode
+        ? "Video goes straight to the display hardware at the display's resolution. On a Pi 3, Auto picks 30 Hz when the display supports it: at 60 Hz the Pi 3 can't show two 1080p videos at once, so dissolves between videos would become cuts. Changing the mode briefly restarts playback."
+        : "Video is composited at this resolution and scaled to the display's preferred mode. Changing output settings briefly restarts playback.")),
     h("fieldset", {}, h("legend", {}, "Audio"),
       h("div", { class: "row" },
         h("label", { class: "check" }, h("input", { type: "checkbox", name: "audio_enabled", checked: s.audio.enabled }), "Play audio (HDMI)"),
@@ -530,7 +537,8 @@ function renderSettings() {
       default_fit: v("default_fit"),
       default_transition: trans.get(),
       background_color: v("background_color"),
-      output: { render_size: v("render_size"), fps: Number(v("fps")), rotation: Number(v("rotation")) },
+      output: kmsMode ? { mode: v("mode") }
+        : { mode: v("mode"), render_size: v("render_size"), fps: Number(v("fps")), rotation: Number(v("rotation")) },
       audio: { enabled: f.elements.audio_enabled.checked, device: v("audio_device") || "auto", volume: Number(v("volume")) },
     }), "Settings saved");
     document.activeElement?.blur(); await loadSettings();

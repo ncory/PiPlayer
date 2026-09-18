@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import logging
 import os
+import re
 import threading
 from typing import Any
 
@@ -44,6 +46,8 @@ PREVIEW_WIDTH = 480
 DIP_ZORDER = 1_000_000
 AUDIO_CAPS = "audio/x-raw,format=S16LE,rate=48000,channels=2,layout=interleaved"
 
+_LAYER_NAME = re.compile(r"^layer(\d+)(?:_|$)")
+
 # ALSA devices that failed to open; skipped on the next rebuild so a missing
 # or silent HDMI sink doesn't take video down with it.
 _broken_audio_devices: set[str] = set()
@@ -61,6 +65,21 @@ def configure_environment(output: dict | None) -> None:
     if output:
         os.environ.setdefault("GST_GL_GBM_DRM_DEVICE", output["card"])
         os.environ.setdefault("GST_GL_GBM_DRM_CONNECTOR", output["connector"])
+
+
+@contextlib.contextmanager
+def _structure(caps: Gst.Caps, index: int = 0):
+    """caps.get_structure(), across gst-python versions.
+
+    From 1.26 it returns a StructureWrapper that must be used as a context
+    manager; older versions return the Gst.Structure directly.
+    """
+    s = caps.get_structure(index)
+    if isinstance(s, Gst.Structure):
+        yield s
+    else:
+        with s as st:
+            yield st
 
 
 def _color_argb(color: str) -> int:
@@ -84,6 +103,7 @@ class _LayerGst:
         self.lock = threading.Lock()
         self.ready_sent = False
         self.rect: tuple[int, int, int, int] | None = None  # fitted placement, before offset
+        self.extra_elements: list[Gst.Element] = []  # per-layer elements outside the bin
 
 
 class GstBackend(Backend):
@@ -251,10 +271,12 @@ class GstBackend(Backend):
             self.pipeline.recalculate_latency()
 
     def _layer_for(self, obj) -> Layer | None:
+        """The layer an element belongs to: inside its bin, or named layerN_*."""
         while obj is not None:
             name = obj.get_name() if hasattr(obj, "get_name") else ""
-            if name.startswith("layer") and name[5:].isdigit():
-                return self.layers.get(int(name[5:]))
+            m = _LAYER_NAME.match(name)
+            if m:
+                return self.layers.get(int(m.group(1)))
             obj = obj.get_parent()
         return None
 
@@ -265,9 +287,22 @@ class GstBackend(Backend):
         layer.g = g  # type: ignore[attr-defined]
         self.z += 1
         layer.z = self.z  # type: ignore[attr-defined]
-        self.layers[layer.id] = layer
         b = Gst.Bin.new(f"layer{layer.id}")
         g.bin = b
+        # The bin must be in the pipeline before its pads can link to the mixer.
+        self.pipeline.add(b)
+        self.layers[layer.id] = layer
+        try:
+            self._build_layer(layer, b)
+        except Exception:
+            self.remove_layer(layer)
+            raise
+        b.sync_state_with_parent()
+        return layer
+
+    def _build_layer(self, layer: Layer, b: Gst.Bin) -> None:
+        source = layer.source
+        g: _LayerGst = layer.g  # type: ignore[attr-defined]
         src = Gst.ElementFactory.make("filesrc")
         src.set_property("location", str(source.path))
         b.add(src)
@@ -291,13 +326,13 @@ class GstBackend(Backend):
             src.link(dec)
             dec.connect("pad-added", self._on_pad_added, layer)
             dec.connect("no-more-pads", self._on_no_more_pads, layer)
-        self.pipeline.add(b)
-        b.sync_state_with_parent()
-        return layer
 
     def _on_pad_added(self, dec, pad, layer: Layer) -> None:
         caps = pad.get_current_caps() or pad.query_caps(None)
-        kind = caps.get_structure(0).get_name().split("/")[0] if caps and caps.get_size() else ""
+        kind = ""
+        if caps and caps.get_size():
+            with _structure(caps) as st:
+                kind = st.get_name().split("/")[0]
         g: _LayerGst = layer.g  # type: ignore[attr-defined]
         with g.lock:
             if kind == "video" and "video" not in g.pads:
@@ -323,14 +358,37 @@ class GstBackend(Backend):
                 return
         self._check_ready(layer)
 
+    # Hooks a subclass overrides to change where video goes (see backend_kms).
+    def _video_elements(self) -> list[tuple[str, dict]]:
+        """Elements between the decoder and the ghost pad for video."""
+        return [("glupload", {}), ("glcolorconvert", {})]
+
+    def _attach_video(self, layer: Layer, ghost: Gst.Pad) -> None:
+        """Connect a layer's video ghost pad to the compositor."""
+        g: _LayerGst = layer.g  # type: ignore[attr-defined]
+        w, h = self.render_size
+        mpad = self.mixer.request_pad_simple("sink_%u")
+        mpad.set_property("zorder", layer.z)  # type: ignore[attr-defined]
+        mpad.set_property("alpha", 0.0)
+        mpad.set_property("repeat-after-eos", True)
+        g.bindings["alpha"] = self._bind(mpad, "alpha")
+        g.mix_pads["video"] = mpad
+        self._place(layer, g.rect or (0, 0, w, h))
+        ghost.link(mpad)
+
     def _add_output(self, layer: Layer, kind: str, pad: Gst.Pad) -> None:
-        """Convert `pad` for the mixer, ghost it out of the bin, and link it."""
+        """Convert `pad` for its consumer, ghost it out of the bin, and link it."""
         g: _LayerGst = layer.g  # type: ignore[attr-defined]
         if kind == "video":
-            names = ["glupload", "glcolorconvert"]
+            spec = self._video_elements()
         else:
-            names = ["queue", "audioconvert", "audioresample"]
-        els = [Gst.ElementFactory.make(n) for n in names]
+            spec = [("queue", {}), ("audioconvert", {}), ("audioresample", {})]
+        els = []
+        for name, props in spec:
+            el = Gst.ElementFactory.make(name)
+            for k, v in props.items():
+                el.set_property(k, v)
+            els.append(el)
         for el in els:
             g.bin.add(el)
         for a, c in zip(els, els[1:]):
@@ -340,21 +398,14 @@ class GstBackend(Backend):
         g.bin.add_pad(ghost)
         g.pads[kind] = ghost
 
-        mixer = self.mixer if kind == "video" else self.amixer
-        mpad = mixer.request_pad_simple("sink_%u")
         if kind == "video":
-            w, h = self.render_size
-            mpad.set_property("zorder", layer.z)  # type: ignore[attr-defined]
-            mpad.set_property("alpha", 0.0)
-            mpad.set_property("repeat-after-eos", True)
-            g.bindings["alpha"] = self._bind(mpad, "alpha")
-            g.mix_pads[kind] = mpad
-            self._place(layer, g.rect or (0, 0, w, h))
+            self._attach_video(layer, ghost)
         else:
+            mpad = self.amixer.request_pad_simple("sink_%u")
             mpad.set_property("volume", 0.0)
             g.bindings["volume"] = self._bind(mpad, "volume")
-        g.mix_pads[kind] = mpad
-        ghost.link(mpad)
+            g.mix_pads[kind] = mpad
+            ghost.link(mpad)
         ghost.add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, self._on_event_probe, layer, kind)
         g.block_probes[kind] = ghost.add_probe(
             Gst.PadProbeType.BLOCK | Gst.PadProbeType.BUFFER, self._on_first_buffer, layer, kind)
@@ -383,12 +434,12 @@ class GstBackend(Backend):
         return Gst.PadProbeReturn.OK
 
     def _apply_geometry(self, layer: Layer, caps: Gst.Caps) -> None:
-        s = caps.get_structure(0)
-        ok_w, vw = s.get_int("width")
-        ok_h, vh = s.get_int("height")
+        with _structure(caps) as s:
+            ok_w, vw = s.get_int("width")
+            ok_h, vh = s.get_int("height")
+            ok, pn, pd = s.get_fraction("pixel-aspect-ratio")
         if not (ok_w and ok_h):
             return
-        ok, pn, pd = s.get_fraction("pixel-aspect-ratio")
         dw = vw * pn / pd if ok and pd else vw
         w, h = self.render_size
         self._place(layer, fit_rect(dw, vh, w, h, layer.source.fit))
@@ -525,12 +576,16 @@ class GstBackend(Backend):
             pid = g.block_probes.pop(kind, None)
             if pid:
                 pad.remove_probe(pid)
-        pipe, mixers = self.pipeline, {"video": self.mixer, "audio": self.amixer}
-        self.teardown.submit(self._teardown, g, pipe, mixers)
+        self.teardown.submit(self._teardown, g, self.pipeline,
+                             {"video": self.mixer, "audio": self.amixer})
 
     @staticmethod
     def _teardown(g: _LayerGst, pipe, mixers) -> None:
         try:
+            for el in g.extra_elements:  # consumers living outside the bin
+                el.set_state(Gst.State.NULL)
+                if pipe:
+                    pipe.remove(el)
             # Releasing the mixer pad first sets it flushing, which wakes any
             # streaming thread waiting inside the aggregator; then the bin
             # can shut down without stalling.

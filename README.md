@@ -8,7 +8,7 @@ Fullscreen playlist player for the Raspberry Pi, controlled over the network.
 - **Per-item position offsets** (X/Y). Adjust them live: the ⌖ button on a playlist item puts it on screen in loop-item mode. Drag it in the live preview, nudge it with the arrow keys, or pause and fine-tune.
 - **Web UI** for playlists, media uploads, settings, transport controls (including loop-item) and a live preview of the output.
 - **REST + WebSocket API** for show controllers and scripts. See [docs/API.md](docs/API.md). The same document is shown on the UI's API tab.
-- Output follows the display's preferred HDMI mode. Video is composited at up to 1080p (30 fps by default) and scaled to fit. Rotation is supported for portrait screens.
+- Output uses the display's own resolution. On a Pi 3 it runs at 30 Hz (1080p30) when the display supports it, or you can pick any mode the display offers.
 - No authentication. Meant for a trusted LAN.
 
 ## Hardware
@@ -21,7 +21,7 @@ Fullscreen playlist player for the Raspberry Pi, controlled over the network.
 
 The Pi 3 has 1 GB of RAM (there's no 2 GB Pi 3), which is plenty for this. Start with the Pi 3. The software is identical on both, so switching to a Pi 4 later is just moving the SD card.
 
-A dissolve decodes two videos at once for its duration. The Pi 3 decoder handles two 1080p30 H.264 streams, but that's the part to watch when testing on real hardware.
+A dissolve between two videos decodes both at once and shows both on screen. Measured on a Pi 3 B+: two 1080p30 H.264 streams decode and display together at full rate. PiPlayer averages about 23% of one CPU core while looping a mixed playlist with dissolves.
 
 ## Preparing the Pi
 
@@ -63,15 +63,12 @@ The Media tab warns about files the hardware can't decode well. Images (JPEG/PNG
 
 ## Display modes
 
-PiPlayer uses whatever mode the display reports as preferred, which covers most monitors and TVs. To force a mode, or to have HDMI come up even when the display is off or connected later, add a `video=` option to the end of the single line in `/boot/firmware/cmdline.txt`, for example:
+Settings → *Display mode* is `auto` or any mode the display offers (for example `1920x1080@60`).
 
-```
-video=HDMI-A-1:1920x1080@60D
-```
+- `auto` uses the display's preferred resolution. On a Pi 3 it picks the 30 Hz (or else 25 Hz) version of that resolution when the display supports it. The Pi 3's display controller has a fixed pixel budget: at 60 Hz it can show only one 1080p video at a time, so a dissolve between two videos would turn into a cut. At 30 Hz two fit comfortably, and 30 fps content plays without judder.
+- If you choose 60 Hz, everything still works except video-to-video dissolves. PiPlayer detects when it's over budget and drops the outgoing video.
 
-The trailing `D` forces the output on. Settings → *Compositing resolution* and *Frame rate* control the internal render size and rate (30 fps at 1080p is recommended on a Pi 3).
-
-If the display isn't connected at boot, PiPlayer retries the output every 30 s. It resumes the default playlist once a display appears.
+If the display isn't connected at boot, PiPlayer retries every 30 s and resumes the default playlist once a display appears. To make HDMI come up even when the display is off, add `video=HDMI-A-1:1920x1080@30D` to the end of the single line in `/boot/firmware/cmdline.txt`. The trailing `D` forces the output on.
 
 ## Development (any machine)
 
@@ -89,7 +86,9 @@ The `sim` backend models the compositor's timing, layers, fades and pauses exact
 piplayer/
   web.py          aiohttp REST API, WebSocket status, static UI
   engine.py       playlists, scheduling, transitions, error recovery (backend-agnostic)
-  backend_gst.py  GStreamer renderer (the real one)
+  backend_kms.py  hardware-plane renderer (the Pi default)
+  kms.py          libdrm atomic modesetting bindings (ctypes)
+  backend_gst.py  GStreamer layer machinery + optional GL-compositing renderer
   backend_sim.py  simulated renderer for development and tests
   config.py       settings + playlists, validation, JSON persistence
   media.py        media library, probing, image pre-rendering
@@ -97,19 +96,24 @@ piplayer/
   static/         web UI (plain HTML/CSS/JS, no build step)
 ```
 
-The renderer is a single long-lived GStreamer pipeline:
+There is no GPU compositing. Decoded frames go straight onto hardware display planes, and the display controller (the HVS) positions, scales, alpha-blends and stacks them while it scans out the picture:
 
 ```
-[layer: file ─ decodebin (V4L2 HW decode) ─ glupload ─ glcolorconvert] ─┐
-[layer ...]                                                             ├─ glvideomixer ─ glimagesink (GBM → KMS → HDMI)
-[background color] [dip color]                                         ─┘         └─ preview JPEG (on demand)
+[layer: file ─ decodebin (V4L2 HW decode) ─ fakevideosink] ─┐ decoder's own dmabufs
+[layer ...]                                                 │ (zero copy)
+                                                            ▼
+            presenter thread: one atomic KMS commit per display frame
+              primary plane  = background color
+              overlay planes = one per visible layer (YUV scanout), with alpha + zpos
+              top overlay    = dip color
 [layer audio ...] ─ audiomixer ─ volume ─ alsasink (HDMI)
 ```
 
-- Each playlist item becomes a *layer* that is added to the running pipeline about 4 s before it's needed. It decodes its first frame and holds it with a blocking pad probe. Starting the layer sets that pad's time offset so the held frame lands on an exact running time, then releases it.
-- Transitions are keyframes on the mixer pads' `alpha` and `volume`, evaluated by the mixers every output frame. Timing is frame-accurate and doesn't depend on Python's scheduling.
-- A dissolve fades the incoming layer in over the outgoing one; if the incoming picture is letterboxed, the outgoing one also fades out. A dip fades a solid-color layer in and out and cuts between items underneath it at the midpoint.
-- Compositing happens on the GPU (the Pi 3's VC4 over GLES2), so the CPU mostly shuffles buffers.
+- Each playlist item becomes a *layer* that is added to the running GStreamer pipeline about 4 s before it's needed. It decodes its first frame and holds it with a blocking pad probe. Starting the layer sets that pad's time offset so the held frame lands on an exact running time, then releases it.
+- Transitions are opacity keyframes. The presenter evaluates them for the next display refresh and applies every plane's frame, position and opacity in a single atomic update, so each refresh shows one consistent frame. Audio fades are keyframes on the audio mixer's pads.
+- A dissolve fades the incoming layer in over the outgoing one; if the incoming picture is letterboxed, the outgoing one also fades out. A dip fades a solid-color plane in and out and cuts between items underneath it at the midpoint.
+- Images are rendered once, at the display resolution, into scanout buffers.
+- Why not the GPU: on the Pi 3 the GPU gets empty textures when it imports the decoder's YUV buffers, and uploading 1080p frames through the CPU runs at about 1 fps. The display controller scans the same buffers out for free. (`--backend gl` keeps a GStreamer GL-compositing renderer for other hardware.)
 
 ## Troubleshooting
 
@@ -121,4 +125,12 @@ The renderer is a single long-lived GStreamer pipeline:
 
 ## Status
 
-The web UI, API and playlist engine are covered by tests against the simulated renderer. The GStreamer renderer was written against the GStreamer 1.26 sources and still needs to be brought up and tuned on real Pi 3 hardware.
+Brought up on a Raspberry Pi 3 Model B+ (Raspberry Pi OS Lite Trixie, kernel 6.18, GStreamer 1.26) driving a 1080p display. Verified there:
+
+- H.264 1080p30 playback with HDMI audio
+- dissolves between two 1080p videos, and between images and videos
+- dip to color
+- letterboxed 4:3 content
+- pause, loop-item, and live repositioning of the on-screen item while paused
+
+The web UI, API and playlist engine are also covered by tests against the simulated renderer.

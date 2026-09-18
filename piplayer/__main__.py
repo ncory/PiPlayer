@@ -27,21 +27,27 @@ def parse_args() -> argparse.Namespace:
                    help="data directory (state, media, cache) [env PIPLAYER_DATA]")
     p.add_argument("--host", default=os.environ.get("PIPLAYER_HOST", "0.0.0.0"))
     p.add_argument("--port", type=int, default=int(os.environ.get("PIPLAYER_PORT", "8080")))
-    p.add_argument("--backend", choices=("auto", "gst", "sim"),
+    p.add_argument("--backend", choices=("auto", "kms", "gl", "sim"),
                    default=os.environ.get("PIPLAYER_BACKEND", "auto"),
-                   help="renderer: gst (GStreamer, real output), sim (simulated), auto")
+                   help="renderer: kms (hardware display planes; the Pi default), gl (GStreamer "
+                        "GL compositing), sim (simulated, no video), auto")
     p.add_argument("--sink", choices=("kms", "fake", "window"),
                    default=os.environ.get("PIPLAYER_SINK", "kms"),
-                   help="gst output: kms (HDMI via DRM/KMS), window (desktop), fake (headless)")
+                   help="gl renderer output: kms (HDMI via GBM), window (desktop), fake (headless)")
     p.add_argument("--no-autoplay", action="store_true", help="don't start the default playlist")
     p.add_argument("--log-level", default=os.environ.get("PIPLAYER_LOG", "info"))
     return p.parse_args()
 
 
 def make_backend_factory(args, hw: dict):
-    kind = args.backend
+    kind = {"gst": "gl"}.get(args.backend, args.backend)
     if kind == "auto":
-        kind = "gst" if hw["is_pi"] else "sim"
+        kind = "kms" if hw["is_pi"] else "sim"
+    if kind == "kms":
+        from .backend_kms import KmsBackend
+
+        log.info("using KMS plane renderer")
+        return KmsBackend
     if kind == "sim":
         from .backend_sim import SimBackend
 

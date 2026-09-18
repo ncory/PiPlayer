@@ -429,7 +429,11 @@ class Engine:
                              offset=offset, uid=item["uid"])
         except Exception as e:  # noqa: BLE001 - PIL errors, OS errors, ...
             return self._failed_layer(Source(kind or "video", self.library.media_dir, name), str(e))
-        layer = self.backend.create_layer(src)
+        try:
+            layer = self.backend.create_layer(src)
+        except Exception as e:  # noqa: BLE001 - renderer couldn't build it
+            log.exception("could not create layer for %s", name)
+            return self._failed_layer(src, f"renderer error: {e}")
         layer.created = self.backend.now()
         if kind == "image":
             layer.duration = item.get("duration") or settings["default_image_duration"]

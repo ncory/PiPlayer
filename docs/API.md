@@ -187,7 +187,7 @@ Send only the fields to change; nested objects are merged.
   "default_image_duration": 10,
   "default_fit": "contain",
   "background_color": "#000000",
-  "output": {"render_size": "auto", "fps": 30, "rotation": 0},
+  "output": {"mode": "auto"},
   "audio": {"enabled": true, "device": "auto", "volume": 100}
 }
 ```
@@ -196,13 +196,14 @@ Send only the fields to change; nested objects are merged.
 |---|---|
 | `default_playlist` | Played automatically at boot (`null` = start idle). |
 | `background_color` | Shown when stopped and behind letterboxed content. Applies live. |
-| `output.render_size` | `auto` (the display's preferred mode, capped at about 1080p) or `WIDTHxHEIGHT`. The HDMI mode itself always follows the display. Video is composited at this size and scaled to fit. |
-| `output.fps` | Compositing frame rate (1-60). 30 is recommended on a Pi 3. |
-| `output.rotation` | `0`, `90`, `180`, `270`, for portrait-mounted screens. |
+| `output.mode` | Display mode: `auto`, `WIDTHxHEIGHT` or `WIDTHxHEIGHT@HZ`. `auto` uses the display's preferred resolution; on a Pi 3 it prefers 30 Hz so two 1080p videos can be on screen at once for dissolves. `/api/status` → `output.display.modes` lists what the display supports. |
+| `output.render_size`, `output.fps`, `output.rotation` | Only used by the optional GL-compositing renderer (`--backend gl`). |
 | `audio.device` | `auto` (the HDMI port) or an ALSA device string such as `default:CARD=vc4hdmi`. |
 | `audio.volume` | 0-100; applies live. |
 
 Changing `output.*`, `audio.enabled` or `audio.device` restarts the renderer (about 1-2 s of black), then resumes the current item.
+
+On the Pi's default renderer, the `output` object in `/api/status` also includes `frames_presented` (display updates), `commit_failures`, and `display.modes`.
 
 ## System
 

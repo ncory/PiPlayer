@@ -27,6 +27,7 @@ ROTATIONS = (0, 90, 180, 270)
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 SIZE_RE = re.compile(r"^(auto|\d{3,4}x\d{3,4})$")
+MODE_RE = re.compile(r"^(auto|\d{3,4}x\d{3,4}(@\d{2,3})?)$")
 MAX_TRANSITION_SECONDS = 30.0
 MAX_OFFSET = 10000  # pixels
 
@@ -36,7 +37,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "default_image_duration": 10.0,
     "default_fit": "contain",
     "background_color": "#000000",
-    "output": {"render_size": "auto", "fps": 30, "rotation": 0},
+    "output": {"mode": "auto", "render_size": "auto", "fps": 30, "rotation": 0},
     "audio": {"enabled": True, "device": "auto", "volume": 100},
 }
 
@@ -119,6 +120,8 @@ def validate_settings(s: dict) -> dict:
         raise ValidationError(f"default_fit must be one of {', '.join(FITS)}")
     out["background_color"] = _color(out["background_color"], "background_color")
     o = out["output"]
+    if not isinstance(o.get("mode"), str) or not MODE_RE.match(o["mode"]):
+        raise ValidationError("output.mode must be 'auto', WIDTHxHEIGHT or WIDTHxHEIGHT@HZ")
     if not isinstance(o.get("render_size"), str) or not SIZE_RE.match(o["render_size"]):
         raise ValidationError("output.render_size must be 'auto' or WIDTHxHEIGHT")
     o["fps"] = int(_num(o["fps"], "output.fps", 1, 60))
