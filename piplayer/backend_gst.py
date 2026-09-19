@@ -32,7 +32,7 @@ import gi
 
 gi.require_version("Gst", "1.0")
 gi.require_version("GstController", "1.0")
-from gi.repository import Gst, GstController  # noqa: E402
+from gi.repository import GLib, Gst, GstController  # noqa: E402
 
 from . import hw as hwmod  # noqa: E402
 from .backend import Backend, Keyframes, Layer, Source, covers, fit_rect, hex_to_rgb  # noqa: E402
@@ -40,6 +40,24 @@ from .backend import Backend, Keyframes, Layer, Source, covers, fit_rect, hex_to
 log = logging.getLogger(__name__)
 SEC = Gst.SECOND
 Gst.init(None)
+
+# Known-harmless GStreamer criticals, filtered so they don't flood the journal.
+#  - "gst_memory_resize: assertion 'gst_memory_is_writable (mem)' failed":
+#    when a frozen frame has been imported by the ISP (freeze-mode dissolves),
+#    its memory is shared, and the decoder's pool can't reset it on teardown.
+#    Nothing is lost: the pool just doesn't reuse that buffer. ~2 per freeze.
+_QUIET = ("gst_memory_resize: assertion 'gst_memory_is_writable (mem)' failed",)
+
+
+def _log_filter(domain, level, message, _data=None):
+    if message and any(q in message for q in _QUIET):
+        return
+    GLib.log_default_handler(domain, level, message, None)
+
+
+for _domain in ("GStreamer",):
+    GLib.log_set_handler(_domain, GLib.LogLevelFlags.LEVEL_CRITICAL
+                         | GLib.LogLevelFlags.LEVEL_WARNING, _log_filter, None)
 
 ROTATE = {0: "none", 90: "clockwise", 180: "rotate-180", 270: "counterclockwise"}
 PREVIEW_WIDTH = 480
