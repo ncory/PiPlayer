@@ -34,19 +34,30 @@ Use **Raspberry Pi OS Lite (64-bit), Trixie**. You don't need the desktop: PiPla
    - enable SSH (public-key auth recommended) and add your key
    - Wi-Fi if needed (wired Ethernet is recommended for uploading large videos)
 2. Boot it with the HDMI display connected, then SSH in.
-3. Install:
+3. Install with one command, run as your normal user (not with `sudo`):
    ```bash
-   sudo apt install -y git
-   git clone https://github.com/ncory/PiPlayer.git
-   cd PiPlayer
-   sudo ./scripts/install.sh
-   sudo reboot
+   curl -sL "https://github.com/ncory/PiPlayer/raw/refs/heads/main/install.sh" | bash
    ```
-   The installer adds the GStreamer/Mesa/Python packages. It then creates a `piplayer` service user, installs the app to `/opt/piplayer` with data in `/var/lib/piplayer`, and enables the `piplayer` systemd service on port 80. It also hides boot messages and the tty1 login prompt; pass `--no-quiet-boot` to keep them.
-   Since the repo is private, clone it over SSH (with a deploy key) or with a GitHub token.
-4. Open `http://piplayer.local/`, upload media, and build the `default` playlist.
+   It asks for your password once. Raspberry Pi OS Trixie doesn't give the first user passwordless `sudo`. The installer then:
+   - updates the system (`PIPLAYER_SKIP_UPGRADE=1` skips this)
+   - clones PiPlayer into `~/piplayer`
+   - installs the GStreamer, Mesa and Python packages
+   - creates a `piplayer` service user
+   - installs the app to `/opt/piplayer`, with data in `/var/lib/piplayer`
+   - enables the `piplayer` systemd service on port 80
+   - hides boot messages and the tty1 login prompt
 
-To update, run `git pull && sudo ./scripts/install.sh` in the checkout. Playlists, settings and media are kept.
+   It also lets your user update PiPlayer later without a password: you own `/opt/piplayer` and may start, stop and restart the `piplayer` service, and nothing else. The service itself runs as the unprivileged `piplayer` user.
+
+   Options go in `PIPLAYER_OPTS`, for example:
+   ```bash
+   curl -sL "https://github.com/ncory/PiPlayer/raw/refs/heads/main/install.sh" | PIPLAYER_OPTS="--port 8080 --no-quiet-boot" bash
+   ```
+4. Reboot once (`sudo reboot`), then open `http://<hostname>.local/`, upload media, and build the `default` playlist.
+
+To update, run the same `curl` command again. Playlists, settings and media are kept.
+
+From a checkout you can also run the system installer directly: `sudo ./scripts/install.sh [--deploy-user "$USER"] [--port N] [--no-quiet-boot]`.
 
 To check the hardware (display, GL, decoders, audio), run `sudo ./scripts/diag.sh /var/lib/piplayer/media/some-video.mp4`.
 
