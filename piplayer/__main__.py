@@ -74,9 +74,13 @@ async def main_async(args) -> None:
     engine = Engine(store, library, make_backend_factory(args, hw), hw)
     gpi = GpiManager(store, engine)
     app = build_app(store, library, engine, hw, gpi)
-    runner = web.AppRunner(app, access_log=None)
+    # Don't let lingering HTTP connections hold up shutdown (aiohttp's default
+    # is 60 s, longer than systemd waits); the parameter moved between versions.
+    runner_kw = {"shutdown_timeout": 2.0} if _accepts(web.AppRunner, "shutdown_timeout") else {}
+    site_kw = {"shutdown_timeout": 2.0} if _accepts(web.TCPSite, "shutdown_timeout") else {}
+    runner = web.AppRunner(app, access_log=None, **runner_kw)
     await runner.setup()
-    site = web.TCPSite(runner, args.host, args.port)
+    site = web.TCPSite(runner, args.host, args.port, **site_kw)
     await site.start()
     log.info("web UI on http://%s:%d/", args.host, args.port)
     await engine.start(autoplay=not args.no_autoplay)
@@ -88,7 +92,18 @@ async def main_async(args) -> None:
         loop.add_signal_handler(sig, stop.set)
     await stop.wait()
     log.info("shutting down")
+    t = loop.time()
     await runner.cleanup()
+    log.info("stopped in %.1f s", loop.time() - t)
+
+
+def _accepts(cls, param: str) -> bool:
+    import inspect
+
+    try:
+        return param in inspect.signature(cls.__init__).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def main() -> None:

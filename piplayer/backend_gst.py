@@ -223,17 +223,29 @@ class GstBackend(Backend):
         self.pipeline = self._build()
         bus = self.pipeline.get_bus()
         bus.set_sync_handler(self._on_bus_message)
+        self._drain_task = asyncio.create_task(self._drain_bus(bus))
         ret = self.pipeline.set_state(Gst.State.PLAYING)
         if ret == Gst.StateChangeReturn.FAILURE:
             self.emit("fatal", None, "pipeline failed to start")
+
+    async def _drain_bus(self, bus: Gst.Bus) -> None:
+        """Free the messages the sync handler let through (see _on_bus_message)."""
+        while True:
+            await asyncio.sleep(0.25)
+            while bus.pop() is not None:
+                pass
 
     async def stop(self) -> None:
         self._stopping = True
         pipe = self.pipeline
         self.pipeline = None
+        if getattr(self, "_drain_task", None):
+            self._drain_task.cancel()
         if pipe:
             await asyncio.to_thread(pipe.set_state, Gst.State.NULL)
-            pipe.get_bus().set_sync_handler(None)
+            bus = pipe.get_bus()
+            bus.set_sync_handler(None)
+            bus.set_flushing(True)  # drops anything still queued
         self.layers.clear()
         self.teardown.shutdown(wait=False)
 
@@ -270,7 +282,13 @@ class GstBackend(Backend):
             self.rendered, self.dropped = processed, dropped
         elif t == Gst.MessageType.LATENCY:
             self._post(self._recalc_latency)
-        return Gst.BusSyncReply.DROP
+        # PASS, not DROP: with a Python sync handler, gst-python leaks a
+        # reference to every message it returns DROP for, and a message holds
+        # its source element, so every element that ever posted a message
+        # (decoders, bins...) was never freed. ~4 sockets per playlist item
+        # leaked this way until the process hit its file limit (~250 items).
+        # _drain_bus() pops and frees the passed messages.
+        return Gst.BusSyncReply.PASS
 
     def _recalc_latency(self) -> None:
         if self.pipeline:

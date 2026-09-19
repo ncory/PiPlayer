@@ -767,6 +767,7 @@ class _Freezer:
             "! video/x-raw(memory:DMABuf),format=DMA_DRM,drm-format=XR24 "
             "! appsink name=out sync=false max-buffers=2")
         self.src, self.sink = self.pipe.get_by_name("src"), self.pipe.get_by_name("out")
+        self.pipe.get_bus().set_flushing(True)  # nobody reads it; drop messages in C
         self.src.set_property("caps", caps)
         self.caps = caps
         self.pipe.set_state(Gst.State.PLAYING)
