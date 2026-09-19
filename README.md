@@ -47,7 +47,7 @@ Use **Raspberry Pi OS Lite (64-bit), Trixie**. You don't need the desktop: PiPla
    - enables the `piplayer` systemd service on port 80
    - hides boot messages and the tty1 login prompt
 
-   It also lets your user update PiPlayer later without a password: you own `/opt/piplayer` and may start, stop and restart the `piplayer` service, and nothing else. The service itself runs as the unprivileged `piplayer` user.
+   It also lets your user update PiPlayer later without a password: you own `/opt/piplayer` and may start, stop and restart the `piplayer` service and reboot the Pi, and nothing else. The service itself runs as the unprivileged `piplayer` user.
 
    Options go in `PIPLAYER_OPTS`, for example:
    ```bash

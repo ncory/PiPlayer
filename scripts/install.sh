@@ -13,7 +13,8 @@
 #   --no-quiet-boot       leave the boot console / login prompt on the HDMI output
 #   --port N              web UI port (default 80)
 #   --deploy-user NAME    let NAME update PiPlayer without a password: NAME owns
-#                         /opt/piplayer and may start/stop/restart the service.
+#                         /opt/piplayer and may start/stop/restart the service
+#                         and reboot the Pi.
 #                         (The service itself still runs as the unprivileged
 #                         "piplayer" user.)
 set -euo pipefail
@@ -78,8 +79,9 @@ if [[ -n "$DEPLOY_USER" ]]; then
   SYSTEMCTL="$(command -v systemctl)"
   {
     echo "# Installed by PiPlayer (scripts/install.sh --deploy-user): lets $DEPLOY_USER"
-    echo "# start/stop/restart the PiPlayer service, and nothing else, without a password."
-    echo "$DEPLOY_USER ALL=(root) NOPASSWD: $SYSTEMCTL restart piplayer.service, $SYSTEMCTL stop piplayer.service, $SYSTEMCTL start piplayer.service"
+    echo "# start/stop/restart the PiPlayer service and reboot the Pi, and nothing else,"
+    echo "# without a password."
+    echo "$DEPLOY_USER ALL=(root) NOPASSWD: $SYSTEMCTL restart piplayer.service, $SYSTEMCTL stop piplayer.service, $SYSTEMCTL start piplayer.service, $SYSTEMCTL reboot"
   } >"$TMP"
   if visudo -cf "$TMP" >/dev/null; then
     install -m 0440 -o root -g root "$TMP" "$SUDOERS"
