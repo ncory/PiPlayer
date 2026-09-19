@@ -164,3 +164,7 @@ Brought up on a Raspberry Pi 3 Model B+ (Raspberry Pi OS Lite Trixie, kernel 6.1
 - pause, loop-item, and live repositioning of the on-screen item while paused
 
 The web UI, API and playlist engine are also covered by tests against the simulated renderer.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

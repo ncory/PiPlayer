@@ -3,6 +3,7 @@ name = "piplayer"
 version = "0.1.0"
 description = "Network-controlled fullscreen playlist player for Raspberry Pi"
 requires-python = ">=3.11"
+license = "MIT"
 dependencies = ["aiohttp>=3.9", "pillow>=9"]
 
 [tool.pytest.ini_options]
