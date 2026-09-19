@@ -278,7 +278,7 @@ class KmsBackend(GstBackend):
                           ("signal-handoffs", True), ("enable-last-sample", False),
                           ("max-lateness", -1)):
             sink.set_property(prop, val)
-        sink.connect("handoff", self._on_frame, layer)
+        g.handlers.append((sink, sink.connect("handoff", self._on_frame, layer)))
         self.pipeline.add(sink)
         g.extra_elements.append(sink)
         sink.sync_state_with_parent()
@@ -386,8 +386,8 @@ class KmsBackend(GstBackend):
         if g and "freeze" in g.block_probes and "video" in g.pads:
             # let the frozen decoder's thread run into the drop probe and wind down
             pid = g.block_probes.pop("freeze")
-            g.pads["video"].add_probe(Gst.PadProbeType.DATA_DOWNSTREAM,
-                                      lambda *a: Gst.PadProbeReturn.DROP)
+            g.probes.append((g.pads["video"], g.pads["video"].add_probe(
+                Gst.PadProbeType.DATA_DOWNSTREAM, lambda *a: Gst.PadProbeReturn.DROP)))
             g.pads["video"].remove_probe(pid)
         self._wake()
         super().remove_layer(layer)

@@ -104,6 +104,12 @@ class _LayerGst:
         self.ready_sent = False
         self.rect: tuple[int, int, int, int] | None = None  # fitted placement, before offset
         self.extra_elements: list[Gst.Element] = []  # per-layer elements outside the bin
+        # Every signal handler and pad probe registered for this layer. Their
+        # closures reference the layer, so unless they're all removed at
+        # teardown the bin (and its bus sockets, decoder buffers...) is never
+        # freed: C-side references Python's GC can't see or break.
+        self.handlers: list[tuple[Gst.Object, int]] = []
+        self.probes: list[tuple[Gst.Pad, int]] = []
 
 
 class GstBackend(Backend):
@@ -324,8 +330,8 @@ class GstBackend(Backend):
             dec = Gst.ElementFactory.make("decodebin")
             b.add(dec)
             src.link(dec)
-            dec.connect("pad-added", self._on_pad_added, layer)
-            dec.connect("no-more-pads", self._on_no_more_pads, layer)
+            g.handlers.append((dec, dec.connect("pad-added", self._on_pad_added, layer)))
+            g.handlers.append((dec, dec.connect("no-more-pads", self._on_no_more_pads, layer)))
 
     def _on_pad_added(self, dec, pad, layer: Layer) -> None:
         caps = pad.get_current_caps() or pad.query_caps(None)
@@ -406,7 +412,8 @@ class GstBackend(Backend):
             g.bindings["volume"] = self._bind(mpad, "volume")
             g.mix_pads[kind] = mpad
             ghost.link(mpad)
-        ghost.add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, self._on_event_probe, layer, kind)
+        g.probes.append((ghost, ghost.add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM,
+                                                self._on_event_probe, layer, kind)))
         g.block_probes[kind] = ghost.add_probe(
             Gst.PadProbeType.BLOCK | Gst.PadProbeType.BUFFER, self._on_first_buffer, layer, kind)
         # Only now let data in, so the first buffer can't slip past the probe.
@@ -572,7 +579,8 @@ class GstBackend(Backend):
         # Swallow everything the layer still produces, then release blocked
         # streaming threads so they hit the drop probe and wind down.
         for kind, pad in g.pads.items():
-            pad.add_probe(Gst.PadProbeType.DATA_DOWNSTREAM, lambda *a: Gst.PadProbeReturn.DROP)
+            g.probes.append((pad, pad.add_probe(Gst.PadProbeType.DATA_DOWNSTREAM,
+                                                lambda *a: Gst.PadProbeReturn.DROP)))
             pid = g.block_probes.pop(kind, None)
             if pid:
                 pad.remove_probe(pid)
@@ -600,6 +608,32 @@ class GstBackend(Backend):
                 pipe.remove(g.bin)
         except Exception:  # noqa: BLE001
             log.exception("layer teardown failed")
+        finally:
+            GstBackend._release_refs(g)
+
+    @staticmethod
+    def _release_refs(g: _LayerGst) -> None:
+        """Drop every reference between the layer and its GStreamer objects."""
+        for obj, hid in g.handlers:
+            try:
+                obj.disconnect(hid)
+            except Exception:  # noqa: BLE001
+                pass
+        for pad, pid in g.probes:
+            pad.remove_probe(pid)
+        for kind, pid in g.block_probes.items():
+            pad = g.pads.get(kind if kind in g.pads else "video")
+            if pad is not None:
+                pad.remove_probe(pid)
+        g.handlers.clear()
+        g.probes.clear()
+        g.block_probes.clear()
+        g.pads.clear()
+        g.mix_pads.clear()
+        g.extra_elements.clear()
+        g.bindings.clear()
+        g.segments.clear()
+        g.bin = None
 
     # ------------------------------------------------------------- preview
     def _on_preview_sample(self, sink) -> Gst.FlowReturn:
