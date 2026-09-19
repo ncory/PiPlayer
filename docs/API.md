@@ -204,7 +204,7 @@ Send only the fields to change; nested objects are merged.
 
 Changing `output.*`, `audio.enabled` or `audio.device` restarts the renderer (about 1-2 s of black), then resumes the current item.
 
-On the Pi's default renderer, the `output` object in `/api/status` also includes `frames_presented` (display updates), `commit_failures`, and `display.modes`.
+On the Pi's default renderer, the `output` object in `/api/status` also includes `frames_presented` (display updates), `commit_failures`, `display.modes`, `display.forceable` (standard modes you can force even though the display doesn't list them), and `display.forced`. When `video_overlap` is `false`, the display can't show two videos at once; `limits` then describes the consequence: video-to-video dissolves freeze the outgoing clip.
 
 ## GPI triggers
 

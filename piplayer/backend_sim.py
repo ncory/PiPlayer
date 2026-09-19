@@ -31,6 +31,7 @@ class SimBackend(Backend):
         self.dip_kfs: Keyframes = []
         self.master_volume = settings["audio"]["volume"]
         self._task: asyncio.Task | None = None
+        self.frozen: dict[int, float] = {}
         size = settings["output"]["render_size"]
         if size != "auto":
             w, h = (int(x) for x in size.split("x"))
@@ -108,6 +109,9 @@ class SimBackend(Backend):
     def set_position(self, layer: Layer, dx: int, dy: int) -> None:
         layer.offset = (dx, dy)
         self._update_cover(layer)
+
+    def freeze(self, layer: Layer, at: float) -> None:
+        self.frozen[layer.id] = at
 
     def pause_layer(self, layer: Layer) -> None:
         pass  # position is frozen by the engine via layer.paused_at

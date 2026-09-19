@@ -172,6 +172,10 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
 .pos-fields .hint { flex-basis: 100%; margin: 0; }
 .offset-tag { color: var(--accent); }
 
+.notice { border-color: color-mix(in srgb, var(--warn) 50%, var(--line)); background: color-mix(in srgb, var(--warn) 8%, var(--panel)); }
+.notice strong { color: var(--warn); }
+.notice p { margin: 4px 0 0; }
+
 /* triggers */
 .gpi-row { display: grid; gap: 10px; }
 .gpi-row .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }

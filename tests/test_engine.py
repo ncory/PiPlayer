@@ -328,3 +328,30 @@ async def test_loop_item(data):
     eng.set_loop_item(False)
     await wait_for(lambda: eng.current is not img, timeout=3)
     await eng.shutdown()
+
+
+async def test_constrained_display_freezes_outgoing_video(data):
+    """Where two videos can't be on screen at once, a video-to-video dissolve
+    freezes the outgoing clip, then fades the new one in over the still."""
+    from piplayer import engine as engine_mod
+
+    eng = await make_engine(data, [{
+        "id": "default", "items": [{"media": "clip.mp4"}, {"media": "clip2.mp4"}, {"media": "red.png", "duration": 5}],
+        "transition": {"type": "dissolve", "duration": 0.4}}], autoplay=False)
+    eng.backend.video_overlap_ok = False
+    await eng.play("default", 0, CUT)
+    await wait_for(lambda: eng.current is not None)
+    a = eng.current
+    await wait_for(lambda: eng.current is not a, timeout=3)
+    b = eng.current
+    sim: SimBackend = eng.backend
+    t_freeze = sim.frozen[a.id]
+    assert t_freeze == pytest.approx(a.start_time + 0.6, abs=0.01)  # the usual dissolve start
+    assert b.start_time == pytest.approx(t_freeze + engine_mod.FREEZE_LEAD, abs=0.001)
+    assert sim.alpha(a, b.start_time + 0.39) == pytest.approx(1.0)  # still under the fade
+    assert sim.alpha(b, b.start_time + 0.2) == pytest.approx(0.5, abs=0.01)
+    assert sim.alpha(a, b.start_time + 0.4) == pytest.approx(0.0)
+    # video -> image: no freeze needed
+    await wait_for(lambda: eng.current is not b, timeout=3)
+    assert b.id not in sim.frozen
+    await eng.shutdown()

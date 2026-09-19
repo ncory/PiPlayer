@@ -144,6 +144,7 @@ function renderNow() {
   $("#t-loop").classList.toggle("on", !!st.loop_item);
   if (st.next && st.loop_item) $("#st-next").textContent = "looping this item";
   renderPositionerState();
+  renderLimitsNotice();
   $("#st-error").textContent = st.last_error ? "Last error: " + st.last_error : "";
   document.querySelectorAll("#quick button").forEach((b) => b.classList.toggle("current", b.dataset.id === st.playlist?.id));
   renderCurrentItems();
@@ -520,6 +521,7 @@ function renderSettings() {
         kmsMode ? null : h("label", { class: "field" }, h("span", {}, "Compositing resolution"), sel("render_size", sizes, s.output.render_size)),
         kmsMode ? null : h("label", { class: "field" }, h("span", {}, "Frame rate"), sel("fps", [[24, "24"], [25, "25"], [30, "30"], [50, "50"], [60, "60"]], s.output.fps)),
         kmsMode ? null : h("label", { class: "field" }, h("span", {}, "Rotation"), sel("rotation", [[0, "0°"], [90, "90° (portrait)"], [180, "180°"], [270, "270° (portrait)"]], s.output.rotation))),
+      renderer.limits ? h("p", { class: "hint", style: { color: "var(--warn)" } }, limitsText(renderer)) : null,
       h("p", { class: "hint" }, kmsMode
         ? "Video goes straight to the display hardware at the display's resolution. On a Pi 3, Auto picks 30 Hz when the display supports it: at 60 Hz the Pi 3 can't show two 1080p videos at once, so dissolves between videos would become cuts. Changing the mode briefly restarts playback."
         : "Video is composited at this resolution and scaled to the display's preferred mode. Changing output settings briefly restarts playback.")),
@@ -546,6 +548,24 @@ function renderSettings() {
     }), "Settings saved");
     document.activeElement?.blur(); await loadSettings();
   };
+}
+
+// Shown when the display hardware can't show two videos at once (Pi 3 at 50/60 Hz).
+function limitsText(o) {
+  const mode = (o?.display?.mode || "").replace("@", " @ ") + " Hz";
+  return `At ${mode}, this Raspberry Pi 3 can't show two videos on screen at once. When one video dissolves into another, the outgoing clip freezes on its current frame and the new clip fades in over it, starting about ¼ second after the freeze. Cuts, dips to color, and dissolves to or from images aren't affected.`;
+}
+function renderLimitsNotice() {
+  const o = S.status?.output, box = $("#pl-notice");
+  const on = !!o?.limits;
+  box.hidden = !on;
+  if (!on) return;
+  const has30 = (o.display?.modes || []).some((m) => /@30$/.test(m));
+  box.replaceChildren(h("strong", {}, "Video-to-video dissolves freeze on this display"),
+    h("p", {}, limitsText(o)),
+    h("p", { class: "small muted" }, has30
+      ? "This display lists a 30 Hz mode; choose it in Settings → Display mode to get full-motion dissolves."
+      : "For full-motion dissolves, use a display that accepts 1080p at 30 Hz (most TVs and projectors do; you can also try forcing it in Settings → Display mode)."));
 }
 
 // ---------------------------------------------------------------- triggers

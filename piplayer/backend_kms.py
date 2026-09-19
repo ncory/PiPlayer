@@ -27,6 +27,7 @@ GstBackend; only where video ends up differs.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import io
 import logging
 import threading
@@ -39,7 +40,8 @@ import gi
 gi.require_version("Gst", "1.0")
 gi.require_version("GstAllocators", "1.0")
 gi.require_version("GstVideo", "1.0")
-from gi.repository import Gst, GstAllocators, GstVideo  # noqa: E402
+gi.require_version("GstApp", "1.0")
+from gi.repository import Gst, GstAllocators, GstApp, GstVideo  # noqa: E402,F401
 
 from . import kms  # noqa: E402
 from .backend import Keyframes, Layer, Source, covers, eval_keyframes, fit_rect, hex_to_rgb  # noqa: E402
@@ -49,6 +51,18 @@ log = logging.getLogger(__name__)
 SEC = Gst.SECOND
 PREVIEW_WIDTH = 480
 LOW_REFRESH_FAMILIES = {"pi3"}  # display controllers too slow for 2x1080p at 60 Hz
+# The Pi 3 display controller (HVS) rejects updates above ~240M pixel-cycles/s
+# (the kernel's vc4 load tracker). A YUV 4:2:0 plane counts each of its three
+# planes and processes 2 px/cycle; an unscaled RGB plane counts once at 4 px/cycle.
+HVS_BUDGET = 240_000_000 * 0.95
+
+
+def yuv_plane_load(w: int, h: int, hz: int) -> float:
+    return 3 * w * h * hz / 2
+
+
+def rgb_plane_load(w: int, h: int, hz: int) -> float:
+    return w * h * hz / 4
 
 
 @dataclass
@@ -69,6 +83,14 @@ class _KLayer:
     frames_in: int = 0
     frames_shown: int = 0
     removed: bool = False
+    caps: Any = None  # video caps (for the frame converter)
+    # Freeze (constrained displays): from freeze_at the picture holds on the
+    # current frame, which the ISP converts to RGB so it fits the budget
+    # alongside the incoming video.
+    freeze_at: float | None = None
+    freeze_state: str = ""  # "" | converting | done | failed
+    frozen: Any = None  # RGB Gst.Buffer from the ISP
+    frozen_fb: int = 0
 
 
 class KmsBackend(GstBackend):
@@ -93,6 +115,10 @@ class KmsBackend(GstBackend):
         self.presenter: _Presenter | None = None
         self.modes: list[str] = []
         self.forced_mode = False
+        self.video_overlap_ok = True  # can two full-size videos be on screen at once?
+        self.freezer = _Freezer()
+        self.convert_pool = concurrent.futures.ThreadPoolExecutor(1, "piplayer-freeze")
+        self.bg_suppress_until = 0.0
         self.commit_failures = 0
         self.frames_presented = 0
         self.last_commit_error: str | None = None
@@ -123,6 +149,13 @@ class KmsBackend(GstBackend):
         self.dip_plane = overlays[0]
         self.free_planes = overlays[1:]
         w, h = out.size
+        hz = max(1, out.refresh)
+        self.video_overlap_ok = not (self.hw.get("family") in LOW_REFRESH_FAMILIES
+                                     and 2 * yuv_plane_load(w, h, hz) > HVS_BUDGET)
+        if not self.video_overlap_ok:
+            log.warning("%s: two videos can't be on screen at once on this hardware; "
+                        "video-to-video dissolves will freeze the outgoing clip",
+                        out.mode_name())
         self.bg = card.dumb_buffer(w, h)
         kms.fill_xrgb(self.bg, hex_to_rgb(self.bg_color))
         self.dipbuf = card.dumb_buffer(w, h)
@@ -130,8 +163,7 @@ class KmsBackend(GstBackend):
         changes: dict[int, dict[str, int]] = {
             out.connector_id: {"CRTC_ID": out.crtc_id},
             out.crtc_id: {"MODE_ID": card.mode_blob(out.mode), "ACTIVE": 1},
-            self.primary: _plane_props(self.bg.fb_id, out.crtc_id, (0, 0, w << 16, h << 16),
-                                       (0, 0, w, h)),
+            self.primary: self.primary_props(),
         }
         for pid in overlays:  # clear anything left on the planes we'll use
             changes[pid] = {"FB_ID": 0, "CRTC_ID": 0}
@@ -167,6 +199,8 @@ class KmsBackend(GstBackend):
             self.presenter.stop()
             await asyncio.to_thread(self.presenter.join, 2)
         await super().stop()
+        self.convert_pool.shutdown(wait=False)
+        await asyncio.to_thread(self.freezer.close)
         with self.lock:
             for k in self.klayers.values():
                 self._free_klayer(k)
@@ -261,6 +295,7 @@ class KmsBackend(GstBackend):
         k = self._k(layer)
         with self.lock:
             k.size = (vw, vh)
+            k.caps = caps
             if drm_format:
                 k.fmt = _parse_drm_format(drm_format)
         dw = vw * pn / pd if ok and pd else vw
@@ -287,6 +322,53 @@ class KmsBackend(GstBackend):
             k.frames_in += 1
         self._wake()
 
+    def freeze(self, layer: Layer, at: float) -> None:
+        """From running time `at`, hold the layer's picture on its current frame.
+
+        The layer's video is also blocked from `at`, so its decoder stops (it
+        must not run on to the end of the file and tear down the buffers the
+        frozen frame lives in); its audio carries on and fades out."""
+        k = self._k(layer)
+        with self.lock:
+            k.freeze_at = at
+        g = getattr(layer, "g", None)
+        pad = g.pads.get("video") if g else None
+        if pad is not None:
+            at_ns = int(at * SEC)
+
+            def hold(p, info):
+                buf = info.get_buffer()
+                seg = g.segments.get("video")
+                if buf is None or seg is None or buf.pts == Gst.CLOCK_TIME_NONE:
+                    return Gst.PadProbeReturn.PASS
+                rt = seg.to_running_time(Gst.Format.TIME, buf.pts)
+                if rt != Gst.CLOCK_TIME_NONE and rt + p.get_offset() >= at_ns:
+                    return Gst.PadProbeReturn.OK  # block here until the layer is removed
+                return Gst.PadProbeReturn.PASS
+
+            g.block_probes["freeze"] = pad.add_probe(
+                Gst.PadProbeType.BLOCK | Gst.PadProbeType.BUFFER, hold)
+        self._wake()
+
+    def _convert_frozen(self, k: _KLayer, buf: Gst.Buffer, caps) -> None:
+        """Worker thread: ISP-convert a frozen frame to RGB and make it a framebuffer."""
+        sample = None
+        try:
+            sample = self.freezer.convert(buf, caps)
+        except Exception:  # noqa: BLE001
+            log.exception("freeze-frame conversion failed")
+        with self.lock:
+            out = sample.get_buffer() if sample is not None else None
+            fb = self._fb_for(k, out, kms.XR24) if out is not None and not k.removed else 0
+            if fb:
+                # hold the sample (which owns the buffer) while it's on screen
+                k.frozen, k.frozen_fb, k.freeze_state = sample, fb, "done"
+            else:
+                k.freeze_state = "failed"
+                if not k.removed:
+                    log.warning("could not freeze the outgoing video; it will be cut instead")
+        self._wake()
+
     def start_layer(self, layer: Layer, at: float) -> None:
         if layer.source.kind == "image":
             layer.start_time = at
@@ -300,6 +382,13 @@ class KmsBackend(GstBackend):
             k = self.klayers.get(layer.id)
             if k:
                 k.removed = True  # presenter drops it and frees its buffers after the flip
+        g = getattr(layer, "g", None)
+        if g and "freeze" in g.block_probes and "video" in g.pads:
+            # let the frozen decoder's thread run into the drop probe and wind down
+            pid = g.block_probes.pop("freeze")
+            g.pads["video"].add_probe(Gst.PadProbeType.DATA_DOWNSTREAM,
+                                      lambda *a: Gst.PadProbeReturn.DROP)
+            g.pads["video"].remove_probe(pid)
         self._wake()
         super().remove_layer(layer)
 
@@ -321,7 +410,8 @@ class KmsBackend(GstBackend):
                 card.destroy_dumb(k.image)
         k.fbs.clear()
         k.image = None
-        k.pending = k.current = None
+        k.pending = k.current = k.frozen = None
+        k.frozen_fb = 0
         if k.plane is not None:
             self.free_planes.append(k.plane)
             k.plane = None
@@ -346,6 +436,15 @@ class KmsBackend(GstBackend):
         self.bg_color = color
         if self.bg:
             kms.fill_xrgb(self.bg, hex_to_rgb(color))
+        self._wake()
+
+    def bg_needed(self, t: float | None = None) -> bool:
+        """The background plane is only needed for a non-black color: where no
+        plane covers the screen, the display controller fills black for free
+        (and skipping the plane leaves room in the HVS budget)."""
+        if self.bg_color.lower() in ("#000000", "#000"):
+            return False
+        return t is None or t >= self.bg_suppress_until
 
     def _wake(self) -> None:
         if self.presenter:
@@ -368,14 +467,26 @@ class KmsBackend(GstBackend):
                 layer = self.layers.get(lid)
                 if layer is None or layer.state != "playing" or layer.start_time is None:
                     continue
+                frozen_now = k.freeze_at is not None and t >= k.freeze_at
                 if k.pending is not None:
-                    k.current, k.pending = k.pending, None
-                    k.frames_shown += 1
+                    if frozen_now:
+                        k.pending = None  # picture holds; newer frames are skipped on purpose
+                        k.frames_in -= 1  # (so they don't count as dropped)
+                    else:
+                        k.current, k.pending = k.pending, None
+                        k.frames_shown += 1
+                if frozen_now and not k.freeze_state and k.current is not None:
+                    k.freeze_state = "converting"
+                    self.convert_pool.submit(self._convert_frozen, k, k.current, k.caps)
                 alpha = eval_keyframes(k.alpha_kfs, t, k.alpha_base)
                 if alpha <= 0.002 or k.rect is None or t < layer.start_time - 0.001:
                     continue
+                yuv = k.fmt[0] != kms.XR24
                 if k.image is not None:
                     fb = k.image.fb_id
+                elif k.freeze_state == "done":
+                    fb, yuv = k.frozen_fb, False
+                    held.append(k.frozen)  # the Gst.Sample owning the RGB frame
                 elif k.current is not None:
                     fb = self._fb_for(k, k.current)
                     if not fb:
@@ -383,11 +494,14 @@ class KmsBackend(GstBackend):
                     held.append(k.current)
                 else:
                     continue
-                clip = _clip(k.rect, k.size, W, H, yuv=k.fmt[0] != kms.XR24)
+                clip = _clip(k.rect, k.size, W, H, yuv=yuv)
                 if clip is None:
                     continue
-                visible.append((layer.z, k, fb, clip, alpha))  # type: ignore[attr-defined]
+                visible.append((layer.z, k, fb, clip, alpha, yuv))  # type: ignore[attr-defined]
             visible.sort(key=lambda v: v[0])
+            if not self.video_overlap_ok:
+                visible = self._one_video_at_a_time(visible)
+            visible = [v[:5] for v in visible]
             used = set()
             for zpos, (_, k, fb, (src, dst), alpha) in enumerate(visible, start=1):
                 if k.plane is None:
@@ -413,14 +527,34 @@ class KmsBackend(GstBackend):
                     planes[k.plane] = {"FB_ID": 0, "CRTC_ID": 0}
             if self.dip_plane not in planes:
                 planes[self.dip_plane] = {"FB_ID": 0, "CRTC_ID": 0}
+            planes[self.primary] = self.primary_props(t)
         return planes, held, freed
 
-    def primary_props(self) -> dict[str, int]:
+    @staticmethod
+    def _one_video_at_a_time(visible: list) -> list:
+        """Constrained display: at most one (unconverted) YUV video plane.
+
+        If an older video is being frozen, the newer one waits (a few frames,
+        normally) for its RGB copy; otherwise (e.g. the instant of a cut) the
+        newest video wins."""
+        yuv = [v for v in visible if v[5]]
+        if len(yuv) < 2:
+            return visible
+        oldest = yuv[0][1]
+        if oldest.freeze_at is not None and oldest.freeze_state == "converting":
+            drop = {id(v[1]) for v in yuv[1:]}
+        else:
+            drop = {id(v[1]) for v in yuv[:-1]}
+        return [v for v in visible if id(v[1]) not in drop]
+
+    def primary_props(self, t: float | None = None) -> dict[str, int]:
+        if not self.bg_needed(t):
+            return {"FB_ID": 0, "CRTC_ID": 0}
         W, H = self.render_size
         return _plane_props(self.bg.fb_id, self.out.crtc_id, (0, 0, W << 16, H << 16), (0, 0, W, H))
 
-    def _fb_for(self, k: _KLayer, buf: Gst.Buffer) -> int:
-        """Framebuffer for a decoder dmabuf (cached per underlying buffer)."""
+    def _fb_for(self, k: _KLayer, buf: Gst.Buffer, fmt: int | None = None) -> int:
+        """Framebuffer for a dmabuf-backed frame (cached per underlying buffer)."""
         mem = buf.peek_memory(0)
         if not GstAllocators.is_dmabuf_memory(mem):
             return 0
@@ -436,9 +570,9 @@ class KmsBackend(GstBackend):
         try:
             handle = self.card.import_dmabuf(fd)
             pad = (0,) * (4 - n)
-            fb = self.card.add_fb(meta.width, meta.height, k.fmt[0], (handle,) * n + pad,
+            fb = self.card.add_fb(meta.width, meta.height, fmt or k.fmt[0], (handle,) * n + pad,
                                   tuple(meta.stride[:n]) + pad, tuple(meta.offset[:n]) + pad,
-                                  modifier=k.fmt[1])
+                                  modifier=0 if fmt else k.fmt[1])
         except kms.DrmError as e:
             log.error("could not import video frame: %s", e)
             return 0
@@ -508,6 +642,12 @@ class KmsBackend(GstBackend):
             "frames_dropped": max(0, got - shown),
             "commit_failures": self.commit_failures,
             "last_commit_error": self.last_commit_error,
+            "video_overlap": self.video_overlap_ok,
+            "limits": None if self.video_overlap_ok else {
+                "video_dissolve": "freeze",
+                "reason": (f"At {self.out.mode_name() if self.out else '?'} this Pi's display "
+                           "hardware can't show two videos at once."),
+            },
             "layers": len(self.layers),
         }
 
@@ -549,9 +689,9 @@ class _Presenter(threading.Thread):
                     self.event.clear()
                     continue
                 if changes:
-                    # A flip event needs the CRTC in the commit; the (unchanged)
-                    # background plane brings it in.
-                    changes[be.primary] = be.primary_props()
+                    # A flip event needs the CRTC in the commit; an unchanged
+                    # ACTIVE brings it in without a modeset.
+                    changes[be.out.crtc_id] = {"ACTIVE": 1}
                 ret = be.card.commit(changes, kms.DRM_MODE_ATOMIC_NONBLOCK
                                      | kms.DRM_MODE_PAGE_FLIP_EVENT) if changes else 0
                 if ret == 0:
@@ -570,6 +710,10 @@ class _Presenter(threading.Thread):
                                     if ret == -28 else "")
                         self.warned = True
                     if ret == -28:  # ENOSPC: too many pixels for the display controller
+                        if planes.get(be.primary, {}).get("FB_ID"):
+                            # first give up the background plane for a moment
+                            be.bg_suppress_until = be.now() + 1.0
+                            continue  # and retry right away
                         self._shed_load(planes)  # removed layers stay pending; retried next frame
                     self.event.wait(period / 2)
                     self.event.clear()
@@ -593,6 +737,58 @@ class _Presenter(threading.Thread):
             for k in be.klayers.values():
                 if k.plane == pid:
                     k.alpha_kfs, k.alpha_base = [], 0.0
+
+
+class _Freezer:
+    """Converts single video frames to RGB with the ISP (bcm2835-codec).
+
+    A standing appsrc ! v4l2convert ! appsink pipeline: the ISP reads the
+    decoder's dmabuf directly and writes an XRGB dmabuf the display can scan
+    out. ~15-20 ms per 1080p frame once set up; the first frame for a new
+    format takes ~170 ms, which FREEZE_LEAD in the engine allows for.
+
+    Only ever give it a frame whose layer is frozen (its video blocked): the
+    ISP import shares the frame's memory, and a decoder that keeps running
+    would recycle it underneath us.
+    """
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.pipe = None
+        self.src = self.sink = None
+        self.caps = None
+
+    def _ensure(self, caps) -> None:
+        if self.pipe is not None and self.caps is not None and caps.is_equal(self.caps):
+            return
+        self._close()
+        self.pipe = Gst.parse_launch(
+            "appsrc name=src is-live=false format=time ! v4l2convert output-io-mode=dmabuf-import "
+            "! video/x-raw(memory:DMABuf),format=DMA_DRM,drm-format=XR24 "
+            "! appsink name=out sync=false max-buffers=2")
+        self.src, self.sink = self.pipe.get_by_name("src"), self.pipe.get_by_name("out")
+        self.src.set_property("caps", caps)
+        self.caps = caps
+        self.pipe.set_state(Gst.State.PLAYING)
+
+    def convert(self, buf: Gst.Buffer, caps) -> Gst.Sample | None:
+        """Returns the converted frame as a Gst.Sample (keep the sample alive
+        while its buffer is in use: in Python the buffer is borrowed from it)."""
+        with self.lock:
+            self._ensure(caps)
+            # push_buffer (not the "push-buffer" action signal) so the
+            # decoder's buffer keeps a correct reference count
+            self.src.push_buffer(buf)
+            return self.sink.try_pull_sample(2 * SEC)
+
+    def _close(self) -> None:
+        if self.pipe is not None:
+            self.pipe.set_state(Gst.State.NULL)
+        self.pipe = self.src = self.sink = self.caps = None
+
+    def close(self) -> None:
+        with self.lock:
+            self._close()
 
 
 # ---------------------------------------------------------------- helpers

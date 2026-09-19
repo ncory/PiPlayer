@@ -32,6 +32,7 @@ TICK = 0.04  # scheduler period (s)
 PRELOAD_LEAD = 4.0  # start loading the next item this long before it's needed
 LOOKAHEAD = 0.35  # schedule switches this far ahead so they land frame-exact
 START_MARGIN = 0.08  # minimum time between "now" and a layer's start
+FREEZE_LEAD = 0.25  # freeze-mode dissolves: time to convert the frozen frame
 HIDE_RAMP = 0.002  # "instant" hides are a 2 ms ramp so earlier keyframes stay valid
 LOAD_TIMEOUT = 20.0
 RESTART_BACKOFF = (2, 5, 10, 30)
@@ -369,6 +370,16 @@ class Engine:
                 self.outgoing.append((old, t0 + 0.5))
             self.transition_until = t0
         elif kind == "dissolve":
+            # Where the display can't show two videos at once, the outgoing
+            # video freezes at t0 (its frame is converted to a still) and the
+            # incoming one starts once that still is ready.
+            freeze = (layer is not None and old is not None and not b.video_overlap_ok
+                      and layer.source.kind == "video" and old.source.kind == "video")
+            if freeze:
+                b.freeze(old, t0)
+                t0_audio, t0 = t0, t0 + FREEZE_LEAD
+            else:
+                t0_audio = t0
             if layer:
                 b.start_layer(layer, t0)
                 self._curve(layer, "alpha", [(t0, 0.0), (t0 + d, 1.0)])
@@ -383,7 +394,7 @@ class Engine:
                     self._extend(old, "alpha", t0, t0 + d, 0.0)
                 else:
                     self._extend(old, "alpha", t0 + d - HIDE_RAMP, t0 + d, 0.0)
-                self._extend(old, "volume", t0, t0 + d, 0.0)
+                self._extend(old, "volume", t0_audio, t0 + d, 0.0)
                 self.outgoing.append((old, t0 + d + 0.3))
             self.transition_until = t0 + d
         else:  # dip through a color

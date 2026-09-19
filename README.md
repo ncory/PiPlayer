@@ -78,7 +78,7 @@ The Media tab warns about files the hardware can't decode well. Images (JPEG/PNG
 Settings → *Display mode* is `auto` or any mode the display offers (for example `1920x1080@60`).
 
 - `auto` uses the display's preferred resolution. On a Pi 3 it picks the 30 Hz (or else 25 Hz) version of that resolution when the display supports it. The Pi 3's display controller has a fixed pixel budget: at 60 Hz it can show only one 1080p video at a time, so a dissolve between two videos would turn into a cut. At 30 Hz two fit comfortably, and 30 fps content plays without judder.
-- If you choose 60 Hz, everything still works except video-to-video dissolves. PiPlayer detects when it's over budget and drops the outgoing video.
+- Where that isn't possible (a display that only accepts 50/60 Hz, or a 60 Hz mode you chose), a Pi 3 can't show two 1080p videos at once. Video-to-video dissolves then **freeze the outgoing clip**: it holds its current frame (converted to a still by the Pi's image processor) while the new clip fades in over it with full motion, about ¼ second after the freeze. Cuts, loops with cuts, dips to color, and dissolves to or from images aren't affected. The Playlists page shows a notice when this applies. If the display doesn't list 30 Hz, try forcing `1920x1080@30` in Settings → Display mode: many projectors and TVs accept it anyway.
 
 If the display isn't connected at boot, PiPlayer retries every 30 s and resumes the default playlist once a display appears. To make HDMI come up even when the display is off, add `video=HDMI-A-1:1920x1080@30D` to the end of the single line in `/boot/firmware/cmdline.txt`. The trailing `D` forces the output on.
 

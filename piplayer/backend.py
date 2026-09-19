@@ -108,6 +108,13 @@ class Backend:
         self.emit = emit
         self.render_size: tuple[int, int] = (1920, 1080)
 
+    # False when two full-size videos can't be on screen at once (Pi 3 at 50/60 Hz):
+    # the engine then freezes the outgoing video during video-to-video dissolves.
+    video_overlap_ok = True
+
+    def freeze(self, layer: Layer, at: float) -> None:
+        """Hold a video layer's picture on its current frame from running time `at`."""
+
     async def start(self) -> None: ...
     async def stop(self) -> None: ...
     def now(self) -> float: raise NotImplementedError
