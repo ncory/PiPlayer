@@ -113,8 +113,10 @@ class Engine:
                 await self.play(dp)
             else:
                 self.state = "stopped"
-                if dp:
-                    self._error(f"default playlist '{dp}' is missing or empty")
+                if dp and pl is None:
+                    self._error(f"default playlist '{dp}' does not exist")
+                elif dp:  # e.g. a fresh install: nothing to play yet, not an error
+                    log.info("default playlist '%s' is empty; nothing to play", dp)
         else:
             self.state = "stopped"
         self._notify()
