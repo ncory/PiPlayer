@@ -92,6 +92,7 @@ class KmsBackend(GstBackend):
         self.free_planes: list[int] = []
         self.presenter: _Presenter | None = None
         self.modes: list[str] = []
+        self.forced_mode = False
         self.commit_failures = 0
         self.frames_presented = 0
         self.last_commit_error: str | None = None
@@ -101,7 +102,12 @@ class KmsBackend(GstBackend):
         path = self.device or next((o["card"] for o in _connected_cards()), "/dev/dri/card0")
         self.card = card = kms.Card(path)
         want = self.settings["output"].get("mode", "auto")
-        out = card.pick_output(mode=want)
+        # An explicitly chosen mode may be forced even if the display doesn't
+        # list it (standard CEA timing); "auto" only ever uses listed modes.
+        out = card.pick_output(mode=want, allow_custom=True)
+        self.forced_mode = bool(out.mode.type & kms.DRM_MODE_TYPE_USERDEF)
+        if self.forced_mode:
+            log.warning("forcing %s, which the display does not list", out.mode_name())
         if want in (None, "", "auto") and self.hw.get("family") in LOW_REFRESH_FAMILIES:
             out = _prefer_low_refresh(card, out)
         self.out = out
@@ -493,7 +499,9 @@ class KmsBackend(GstBackend):
             "render_size": list(self.render_size),
             "fps": self.fps,
             "display": {"connector": self.out.name, "mode": self.out.mode_name(),
-                        "connected": True, "modes": self.modes} if self.out else None,
+                        "connected": True, "modes": self.modes, "forced": self.forced_mode,
+                        "forceable": [f"{w}x{h}@{hz}" for (w, h, hz) in kms.CEA_MODES
+                                      if f"{w}x{h}@{hz}" not in self.modes]} if self.out else None,
             "audio_device": self.audio_device,
             "frames_presented": self.frames_presented,
             "frames_rendered": shown,

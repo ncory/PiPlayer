@@ -498,7 +498,8 @@ function renderSettings() {
   const sizes = [["auto", "Auto (match display, max 1080p)"], ...["1920x1080", "1280x720", "1080x1920", ...modes].filter((v, i, a) => a.indexOf(v) === i).map((m) => [m, m])];
   const renderer = S.system?.renderer || {};
   const kmsMode = renderer.backend === "kms";
-  const dispModes = [["auto", "Auto (display's resolution; 30 Hz on a Pi 3)"], ...(renderer.display?.modes || []).map((m) => [m, m.replace("@", " @ ") + " Hz"])];
+  const dispModes = [["auto", "Auto (display's resolution; 30 Hz on a Pi 3)"], ...(renderer.display?.modes || []).map((m) => [m, m.replace("@", " @ ") + " Hz"]),
+    ...(renderer.display?.forceable || []).map((m) => [m, m.replace("@", " @ ") + " Hz — forced (the display doesn't list it)"])];
   if (s.output.mode && !dispModes.some(([v]) => v === s.output.mode)) dispModes.push([s.output.mode, s.output.mode]);
   f.replaceChildren(
     h("fieldset", {}, h("legend", {}, "Playback"),

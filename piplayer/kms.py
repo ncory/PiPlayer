@@ -210,7 +210,8 @@ class Card:
             drmModeFreeResources(res)
         return out
 
-    def pick_output(self, connector: str | None = None, mode: str | None = None) -> Output:
+    def pick_output(self, connector: str | None = None, mode: str | None = None,
+                    allow_custom: bool = False) -> Output:
         """Choose a connected connector, its mode and a CRTC that can drive it.
 
         `mode` is "auto" (the display's preferred mode) or "WIDTHxHEIGHT[@HZ]".
@@ -227,7 +228,7 @@ class Card:
                     drmModeFreeConnector(c)
                     continue
                 modes = [ModeInfo.from_buffer_copy(cc.modes[j]) for j in range(cc.count_modes)]
-                chosen = _choose_mode(modes, mode)
+                chosen = _choose_mode(modes, mode, allow_custom)
                 possible = 0
                 for j in range(cc.count_encoders):
                     e = drmModeGetEncoder(self.fd, cc.encoders[j])
@@ -376,14 +377,45 @@ class Card:
             self._prime_handles[handle] = n
 
 
-def _choose_mode(modes: list[ModeInfo], want: str | None) -> ModeInfo:
+# Standard CEA-861 timings, used to force a mode the display doesn't list.
+# (w, h, hz): (clock kHz, hsync_start, hsync_end, htotal, vsync_start, vsync_end, vtotal)
+CEA_MODES = {
+    (1920, 1080, 30): (74250, 2008, 2052, 2200, 1084, 1089, 1125),  # VIC 34
+    (1920, 1080, 25): (74250, 2448, 2492, 2640, 1084, 1089, 1125),  # VIC 33
+    (1920, 1080, 24): (74250, 2558, 2602, 2750, 1084, 1089, 1125),  # VIC 32
+    (1920, 1080, 50): (148500, 2448, 2492, 2640, 1084, 1089, 1125),  # VIC 31
+    (1920, 1080, 60): (148500, 2008, 2052, 2200, 1084, 1089, 1125),  # VIC 16
+    (1280, 720, 50): (74250, 1720, 1760, 1980, 725, 730, 750),  # VIC 19
+    (1280, 720, 60): (74250, 1390, 1430, 1650, 725, 730, 750),  # VIC 4
+}
+DRM_MODE_TYPE_USERDEF = 1 << 5
+DRM_MODE_FLAG_PHSYNC, DRM_MODE_FLAG_PVSYNC = 1 << 0, 1 << 2
+
+
+def cea_mode(w: int, h: int, hz: int) -> ModeInfo | None:
+    t = CEA_MODES.get((w, h, hz))
+    if t is None:
+        return None
+    clock, hss, hse, ht, vss, vse, vt = t
+    return ModeInfo(clock=clock, hdisplay=w, hsync_start=hss, hsync_end=hse, htotal=ht,
+                    vdisplay=h, vsync_start=vss, vsync_end=vse, vtotal=vt, vrefresh=hz,
+                    flags=DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC,
+                    type=DRM_MODE_TYPE_USERDEF, name=f"{w}x{h}".encode())
+
+
+def _choose_mode(modes: list[ModeInfo], want: str | None, allow_custom: bool = False) -> ModeInfo:
     if want and want != "auto":
         size, _, hz = want.partition("@")
         w, h = (int(x) for x in size.split("x"))
         cands = [m for m in modes if m.hdisplay == w and m.vdisplay == h
                  and not m.flags & 0x10]  # skip interlaced
         if hz:
-            cands = [m for m in cands if m.vrefresh == int(hz)] or cands
+            exact = [m for m in cands if m.vrefresh == int(hz)]
+            if not exact and allow_custom:
+                forced = cea_mode(w, h, int(hz))
+                if forced is not None:
+                    return forced  # not advertised by the display: forced
+            cands = exact or cands
         if cands:
             return max(cands, key=lambda m: m.vrefresh if not hz else -abs(m.vrefresh - int(hz)))
     for m in modes:
