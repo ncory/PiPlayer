@@ -349,29 +349,6 @@ class Api:
         return web.Response(body=data, content_type="image/jpeg",
                             headers={"Cache-Control": "no-store"})
 
-    async def debug_objects(self, request):
-        """PIPLAYER_DEBUG only: live GStreamer objects and what holds them."""
-        import gc
-
-        from gi.repository import Gst
-        gc.collect()
-        bins = [o for o in gc.get_objects() if isinstance(o, Gst.Bin)]
-        out = {"python_bins": len(bins), "bins": []}
-        for b in bins[:12]:
-            refs = []
-            for r in gc.get_referrers(b):
-                if r is bins or isinstance(r, list) and r is gc.garbage:
-                    continue
-                desc = type(r).__name__
-                if isinstance(r, dict):
-                    keys = [k for k, v in r.items() if v is b][:3]
-                    desc += f"{keys}"
-                refs.append(desc)
-            out["bins"].append({"name": b.get_name(), "refcount": b.ref_count,
-                                "parent": b.get_parent().get_name() if b.get_parent() else None,
-                                "referrers": refs[:6]})
-        return _json(out)
-
     async def docs(self, request):
         return web.Response(text=API_DOC.read_text() if API_DOC.exists() else "# API\n",
                             content_type="text/markdown", charset="utf-8")
@@ -434,8 +411,6 @@ def build_app(store: Store, library: MediaLibrary, engine: Engine, hw: dict,
     r.add_post("/api/system/restart-renderer", api.restart_renderer)
     r.add_get("/api/preview.jpg", api.preview)
     r.add_get("/api/docs", api.docs)
-    if os.environ.get("PIPLAYER_DEBUG"):
-        r.add_get("/api/debug/objects", api.debug_objects)
     r.add_get("/api/ws", api.ws)
     r.add_get("/", api.index)
     r.add_static("/static/", STATIC)
