@@ -46,6 +46,7 @@ Use **Raspberry Pi OS Lite (64-bit), Trixie**. You don't need the desktop: PiPla
    - installs the app to `/opt/piplayer`, with data in `/var/lib/piplayer`
    - enables the `piplayer` systemd service on port 80
    - hides boot messages and the tty1 login prompt
+   - reserves 128 MB of video memory (`gpu_mem`) on Pi 4 and earlier
 
    It also lets your user update PiPlayer later without a password: you own `/opt/piplayer` and may start, stop and restart the `piplayer` service and reboot the Pi, and nothing else. The service itself runs as the unprivileged `piplayer` user.
 
@@ -57,7 +58,13 @@ Use **Raspberry Pi OS Lite (64-bit), Trixie**. You don't need the desktop: PiPla
 
 To update, run the same `curl` command again. Playlists, settings and media are kept.
 
-From a checkout you can also run the system installer directly: `sudo ./scripts/install.sh [--deploy-user "$USER"] [--port N] [--no-quiet-boot]`.
+From a checkout you can also run the system installer directly: `sudo ./scripts/install.sh [--deploy-user "$USER"] [--port N] [--no-quiet-boot] [--gpu-mem N | --no-gpu-mem]`.
+
+### Video memory (`gpu_mem`)
+
+The hardware H.264 decoder allocates from the firmware's video memory pool, which `gpu_mem` sizes. At 1080p one clip costs about 26 MB, and a dissolve needs roughly 27 MB more, because two clips and the freeze buffer are alive at once. Raspberry Pi OS ships with `gpu_mem=76`, which leaves about 2 MB spare: the first dissolve scrapes through and a later one fails with `Failed to allocate required memory`, taking the renderer down until the Pi is rebooted.
+
+The installer therefore appends `gpu_mem=128` to `/boot/firmware/config.txt` (backing the file up first), which roughly doubles the pool and leaves around 27 MB of headroom. It applies at the next reboot. The installer never overrides a `gpu_mem` you have set yourself; it warns instead if yours is lower. It is skipped on the Pi 5, which has no firmware decoder, and on boards with less than 1 GB of RAM. Use `--no-gpu-mem` to leave `config.txt` untouched.
 
 To check the hardware (display, GL, decoders, audio), run `sudo ./scripts/diag.sh /var/lib/piplayer/media/some-video.mp4`.
 

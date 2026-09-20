@@ -11,6 +11,11 @@
 #
 # Options:
 #   --no-quiet-boot       leave the boot console / login prompt on the HDMI output
+#   --gpu-mem N           firmware video memory in MB (default 128 on Pi 4 and
+#                         earlier with >=1GB RAM). 1080p dissolves need room for
+#                         two decoders plus a freeze buffer; the 76MB stock
+#                         setting leaves ~2MB and playback dies mid-transition.
+#   --no-gpu-mem          never touch gpu_mem in config.txt
 #   --port N              web UI port (default 80)
 #   --deploy-user NAME    let NAME update PiPlayer without a password: NAME owns
 #                         /opt/piplayer and may start/stop/restart the service
@@ -24,12 +29,15 @@ DATA_DIR=/var/lib/piplayer
 SVC_USER=piplayer
 PORT=80
 QUIET_BOOT=1
+GPU_MEM=128        # 0 = leave config.txt alone
 DEPLOY_USER=""
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-quiet-boot) QUIET_BOOT=0 ;;
+    --gpu-mem) GPU_MEM="$2"; shift ;;
+    --no-gpu-mem) GPU_MEM=0 ;;
     --port) PORT="$2"; shift ;;
     --deploy-user) DEPLOY_USER="$2"; shift ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -39,6 +47,7 @@ done
 
 [[ $EUID -eq 0 ]] || { echo "run with sudo" >&2; exit 1; }
 [[ "$PORT" =~ ^[0-9]+$ ]] || { echo "--port must be a number" >&2; exit 2; }
+[[ "$GPU_MEM" =~ ^[0-9]+$ ]] || { echo "--gpu-mem must be a number" >&2; exit 2; }
 if [[ -n "$DEPLOY_USER" ]] && { [[ "$DEPLOY_USER" == root ]] || ! id "$DEPLOY_USER" >/dev/null 2>&1; }; then
   echo "--deploy-user: '$DEPLOY_USER' is not a regular user on this system" >&2; exit 2
 fi
@@ -96,6 +105,41 @@ sed "s/@PORT@/$PORT/" "$SRC_DIR/scripts/piplayer.service" > /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable piplayer.service
 
+REBOOT_NEEDED=0
+
+# Firmware video memory. The hardware H.264 decoder allocates from the firmware
+# "reloc" heap, which gpu_mem sizes. At 1080p one clip costs ~26MB and a dissolve
+# needs ~27MB more (two decoders plus the ISP freeze buffer), so the stock 76MB
+# leaves about 2MB spare: the first dissolve scrapes through and a later one
+# fails with "Failed to allocate required memory", taking the renderer down.
+# Measured on a Pi 3B+ at 1080p; 128MB gives ~27MB of headroom instead.
+# Pi 5 has no firmware decoder and ignores gpu_mem, so it is skipped there.
+CONFIG_TXT=/boot/firmware/config.txt
+if [[ $GPU_MEM -gt 0 && -f $CONFIG_TXT ]]; then
+  MODEL="$(tr -d '\0' </proc/device-tree/model 2>/dev/null || true)"
+  RAM_MB=$(awk '/MemTotal:/ {print int($2/1024)}' /proc/meminfo)
+  # sed, not grep -oP: prints nothing and still succeeds when there is no match,
+  # so a failure here can never be mistaken for "unset" and append a duplicate.
+  CUR_GPU_MEM="$(sed -n 's/^[[:space:]]*gpu_mem[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+                     "$CONFIG_TXT" | tail -1)"
+  if [[ "$MODEL" == *"Raspberry Pi 5"* ]]; then
+    : # no firmware video decoder; gpu_mem does nothing
+  elif [[ -n "$CUR_GPU_MEM" ]]; then
+    if [[ "$CUR_GPU_MEM" -lt "$GPU_MEM" ]]; then
+      echo "note: config.txt already sets gpu_mem=$CUR_GPU_MEM; leaving it alone." >&2
+      echo "      1080p dissolves may run out of video memory below ${GPU_MEM}MB." >&2
+    fi
+  elif [[ -z "$RAM_MB" || "$RAM_MB" -lt 900 ]]; then
+    echo "note: only ${RAM_MB}MB RAM; not reserving ${GPU_MEM}MB for video." >&2
+  else
+    echo "==> Reserving ${GPU_MEM}MB of video memory (gpu_mem, needs a reboot)"
+    cp -n "$CONFIG_TXT" "$CONFIG_TXT.piplayer-backup" || true
+    # Its own [all] section, so it applies whatever conditional block precedes it.
+    printf '\n[all]\ngpu_mem=%s\n' "$GPU_MEM" >>"$CONFIG_TXT"
+    REBOOT_NEEDED=1
+  fi
+fi
+
 if [[ $QUIET_BOOT -eq 1 ]]; then
   echo "==> Quiet boot: hiding console text and the tty1 login prompt"
   CMDLINE=/boot/firmware/cmdline.txt
@@ -106,6 +150,7 @@ if [[ $QUIET_BOOT -eq 1 ]]; then
     done
   fi
   systemctl disable getty@tty1.service >/dev/null 2>&1 || true
+  REBOOT_NEEDED=1
 fi
 
 systemctl restart piplayer.service
@@ -117,4 +162,4 @@ HOST="$(hostname).local"
 echo
 echo "PiPlayer is installed. Open $URL"
 echo "Media folder: $DATA_DIR/media   Logs: journalctl -u piplayer -f"
-[[ $QUIET_BOOT -eq 1 ]] && echo "Reboot once to apply the quiet-boot settings."
+[[ $REBOOT_NEEDED -eq 1 ]] && echo "Reboot once to apply the boot settings:  sudo reboot"
