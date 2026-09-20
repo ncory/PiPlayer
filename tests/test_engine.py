@@ -13,6 +13,7 @@ from piplayer.backend_sim import SimBackend
 from piplayer.config import Store, ValidationError
 from piplayer.engine import Engine
 from piplayer.media import MediaLibrary
+from piplayer.backend import classify_error
 
 HW = {"model": None, "family": None, "is_pi": False, "memory_mb": None}
 CUT = {"type": "cut"}
@@ -355,3 +356,34 @@ async def test_constrained_display_freezes_outgoing_video(data):
     await wait_for(lambda: eng.current is not b, timeout=3)
     assert b.id not in sim.frozen
     await eng.shutdown()
+
+
+# ---------------------------------------------------------------- bus errors
+
+def test_error_from_a_live_layer_fails_only_that_item():
+    assert classify_error(5, True, "v4l2h264dec4", None) == "layer"
+
+
+def test_error_from_a_removed_layer_is_stale_not_fatal():
+    """The bug that took a player down: one decoder inside layer5 fails, the
+    engine drops the layer, and layer5's demuxer then reports too. That second
+    message must not restart the renderer -- it describes a layer that is gone."""
+    assert classify_error(5, False, "qtdemux4", None) == "stale"
+
+
+def test_error_outside_any_layer_is_fatal():
+    assert classify_error(None, False, "mixer", None) == "fatal"
+
+
+def test_audio_sink_error_is_reported_as_audio():
+    assert classify_error(None, False, "asink", "default:CARD=vc4hdmi") == "audio"
+
+
+def test_audio_sink_error_without_a_device_is_fatal():
+    assert classify_error(None, False, "asink", None) == "fatal"
+
+
+def test_a_layer_owns_its_error_even_when_named_like_the_audio_sink():
+    """Attribution to a layer wins: a live layer is never mistaken for the
+    pipeline's audio sink."""
+    assert classify_error(2, True, "asink", "default:CARD=vc4hdmi") == "layer"

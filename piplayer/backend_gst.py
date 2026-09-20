@@ -35,7 +35,8 @@ gi.require_version("GstController", "1.0")
 from gi.repository import GLib, Gst, GstController  # noqa: E402
 
 from . import hw as hwmod  # noqa: E402
-from .backend import Backend, Keyframes, Layer, Source, covers, fit_rect, hex_to_rgb  # noqa: E402
+from .backend import (Backend, Keyframes, Layer, Source, classify_error, covers,  # noqa: E402
+                      fit_rect, hex_to_rgb)
 
 log = logging.getLogger(__name__)
 SEC = Gst.SECOND
@@ -283,11 +284,17 @@ class GstBackend(Backend):
         t = msg.type
         if t == Gst.MessageType.ERROR:
             err, dbg = msg.parse_error()
-            layer = self._layer_for(msg.src)
-            log.error("gst error from %s: %s (%s)", msg.src.get_path_string(), err.message, dbg)
-            if layer is not None:
+            lid, layer = self._layer_ref(msg.src)
+            kind = classify_error(lid, layer is not None, msg.src.get_name(), self.audio_device)
+            # A stale error is routine (every teardown can produce one), so it
+            # is not worth a line in the journal at the default level.
+            log.log(logging.DEBUG if kind == "stale" else logging.ERROR,
+                    "gst error from %s: %s (%s)", msg.src.get_path_string(), err.message, dbg)
+            if kind == "layer":
                 self._post(self.emit, "error", layer, err.message)
-            elif msg.src.get_name() == "asink" and self.audio_device:
+            elif kind == "stale":
+                pass  # the layer it describes is already gone
+            elif kind == "audio":
                 _broken_audio_devices.add(self.audio_device)
                 self._post(self.emit, "fatal", None, f"audio output failed: {err.message}")
             else:
@@ -312,14 +319,22 @@ class GstBackend(Backend):
         if self.pipeline:
             self.pipeline.recalculate_latency()
 
-    def _layer_for(self, obj) -> Layer | None:
-        """The layer an element belongs to: inside its bin, or named layerN_*."""
+    def _layer_ref(self, obj) -> tuple[int | None, Layer | None]:
+        """The layer an element belongs to: inside its bin, or named layerN_*.
+
+        Returns (id, layer). The id is set whenever the element sits under a
+        layerN bin, even once that layer has been unregistered by
+        remove_layer(); the layer is None in that case, which marks a message
+        as stale rather than as a failure of the pipeline itself.
+        """
         while obj is not None:
             name = obj.get_name() if hasattr(obj, "get_name") else ""
             m = _LAYER_NAME.match(name)
             if m:
-                return self.layers.get(int(m.group(1)))
+                lid = int(m.group(1))
+                return lid, self.layers.get(lid)
             obj = obj.get_parent()
+        return None, None
         return None
 
     # --------------------------------------------------------------- layers

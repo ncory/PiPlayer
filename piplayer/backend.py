@@ -23,6 +23,36 @@ from typing import Callable
 Keyframes = list[tuple[float, float]]
 EmitFn = Callable[[str, "Layer | None", object], None]
 
+
+def classify_error(layer_id: int | None, layer_live: bool, src_name: str,
+                   audio_device: str | None) -> str:
+    """What a renderer error means, from where it came from.
+
+    ``layer_id`` is the layer an element belongs to (None if it belongs to no
+    layer); ``layer_live`` says whether that layer is still registered.
+
+    Returns one of:
+
+    ``"layer"``
+        One item failed. The engine drops it and moves on.
+    ``"stale"``
+        A layer that has already been removed. Backends unregister a layer
+        before its elements have finished winding down, so one failure inside
+        it (or an ordinary teardown) makes its siblings report afterwards.
+        Those describe something that no longer exists: treating them as
+        ``"fatal"`` restarts the renderer and turns a skipped item into a
+        black screen.
+    ``"audio"``
+        The audio sink failed; the caller blacklists the device and restarts.
+    ``"fatal"``
+        Anything outside a layer: the pipeline itself is broken.
+    """
+    if layer_id is not None:
+        return "layer" if layer_live else "stale"
+    if src_name == "asink" and audio_device:
+        return "audio"
+    return "fatal"
+
 _layer_ids = itertools.count(1)
 
 
