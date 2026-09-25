@@ -93,6 +93,7 @@ class Engine:
         self.fail_count = 0
         self.loop_item = False  # repeat the current item instead of advancing
         self.last_error: str | None = None
+        self.last_error_at: float | None = None
         self.errors: list[dict] = []
         self._listeners: list[Callable[[dict], None]] = []
         self._tick_task: asyncio.Task | None = None
@@ -197,8 +198,10 @@ class Engine:
 
     def _error(self, msg: str) -> None:
         log.error(msg)
+        now = time.time()
         self.last_error = msg
-        self.errors.append({"time": time.time(), "message": msg})
+        self.last_error_at = now
+        self.errors.append({"time": now, "message": msg})
         del self.errors[:-20]
 
     # ------------------------------------------------------- transitions
@@ -734,6 +737,10 @@ class Engine:
             "transitioning": now < self.transition_until,
             "loop_item": self.loop_item,
             "last_error": self.last_error,
+            # When it happened, so a caller can tell a live problem from one
+            # that was logged days ago. `state` says whether anything is wrong
+            # *now*; last_error is history and is never cleared silently.
+            "last_error_at": self.last_error_at,
             # One field for monitoring to watch, present in every state --
             # including when the renderer is down and "output" is null.
             # True/False from the renderer or the dormancy flag, None when

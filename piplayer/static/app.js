@@ -20,6 +20,22 @@ function h(tag, attrs = {}, ...kids) {
   for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid instanceof Node ? kid : String(kid));
   return el;
 }
+// "just now" / "14 min ago" / "2 days ago" — enough to tell a live problem
+// from one logged days ago.
+const ago = (epochSeconds) => {
+  if (!epochSeconds) return "";
+  const s = Math.max(0, Date.now() / 1000 - epochSeconds);
+  if (s < 60) return "just now";
+  const units = [[86400, "day"], [3600, "hour"], [60, "min"]];
+  for (const [size, name] of units) {
+    if (s >= size) {
+      const n = Math.floor(s / size);
+      return `${n} ${name}${n > 1 && name !== "min" ? "s" : ""} ago`;
+    }
+  }
+  return "just now";
+};
+
 const fmt = (s) => {
   if (s == null || !isFinite(s)) return "–";
   s = Math.max(0, Math.round(s));
@@ -148,11 +164,21 @@ function renderNow() {
   renderPositionerState();
   renderLimitsNotice();
   const dormant = st.state === "dormant";
-  $("#st-error").textContent = dormant
-    ? "No display connected. Playback resumes automatically when one is plugged in."
-    : st.last_error ? "Last error: " + st.last_error : "";
-  // waiting for a display is not a fault, so don't colour it like one
-  $("#st-error").className = dormant ? "error-line waiting" : "error-line";
+  const faulted = st.state === "error";
+  const el = $("#st-error");
+  if (dormant) {
+    el.textContent = "No display connected. Playback resumes automatically when one is plugged in.";
+    el.className = "error-line waiting";
+  } else if (st.last_error) {
+    // Stamp it: an error from startup should not read like a live fault hours
+    // later. Red only while the player is actually in an error state.
+    const when = ago(st.last_error_at);
+    el.textContent = `Last error${when ? " (" + when + ")" : ""}: ${st.last_error}`;
+    el.className = faulted ? "error-line" : "error-line stale";
+  } else {
+    el.textContent = "";
+    el.className = "error-line";
+  }
   document.querySelectorAll("#quick button").forEach((b) => b.classList.toggle("current", b.dataset.id === st.playlist?.id));
   renderCurrentItems();
 }

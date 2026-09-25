@@ -77,6 +77,7 @@ For `end_action: goto`, the goto's own `transition` comes first in this order.
   "transitioning": false,
   "loop_item": false,
   "last_error": null,
+  "last_error_at": null,
   "output": {"backend": "gstreamer", "render_size": [1920, 1080], "fps": 30,
              "display": {"connector": "HDMI-A-1", "mode": "1920x1080", "connected": true},
              "frames_rendered": 5402, "frames_dropped": 0, "audio_device": "default:CARD=vc4hdmi"}
@@ -86,6 +87,8 @@ For `end_action: goto`, the goto's own `transition` comes first in this order.
 `loop_item` is `true` while loop-item mode is on (see Transport).
 
 `state` is one of `starting`, `playing`, `paused`, `held` (ended with `hold`), `stopped`, `dormant` (no display is connected — see below), `error` (the renderer failed and is restarting).
+
+`last_error` is the most recent error message, and `last_error_at` is when it happened (epoch seconds), or both `null` if there has not been one. They are **history and are never cleared**: a player that recovered hours ago still reports the error it recovered from. Use `state` to tell whether anything is wrong right now, and `last_error_at` to judge how old the message is.
 
 `display_connected` is `true`, `false`, or `null` when the renderer has no concept of a display (the simulator). It is present in **every** state, including those where `output` is `null`, so a monitor can watch this one field rather than parsing `last_error`.
 

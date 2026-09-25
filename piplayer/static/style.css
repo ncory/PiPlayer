@@ -98,6 +98,8 @@ main { max-width: 1280px; margin: 0 auto; padding: 16px; }
 .sys dt { color: var(--muted); } .sys dd { margin: 0; font-variant-numeric: tabular-nums; }
 .error-line { color: var(--err); font-size: 12px; margin-top: 8px; overflow-wrap: anywhere; }
 .error-line.waiting { color: var(--warn); }
+/* an error the player has already recovered from: history, not a fault */
+.error-line.stale { color: var(--muted); }
 
 /* playlists */
 .split { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 16px; align-items: start; }

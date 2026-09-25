@@ -455,3 +455,25 @@ async def test_a_real_start_failure_is_still_an_error(data):
     # not False: we do not claim the display is gone when we do not know
     assert eng.status()["display_connected"] is not False
     await eng.stop()
+
+
+async def test_last_error_carries_a_timestamp(data):
+    """An error from startup should be distinguishable from a live fault, so
+    the API stamps it rather than leaving a bare string that never clears."""
+    eng = await make_engine(data, [{"id": "a", "name": "A", "items": items("clip.mp4")}],
+                            factory=_DisplayThatArrivesLate(99))
+    await wait_for(lambda: eng.state == "dormant")
+    st = eng.status()
+    assert st["last_error"]
+    assert isinstance(st["last_error_at"], float)
+    assert st["last_error_at"] <= __import__("time").time()
+    await eng.stop()
+
+
+async def test_no_error_means_no_timestamp(data):
+    eng = await make_engine(data, [{"id": "a", "name": "A", "items": items("red.png")}])
+    await wait_for(lambda: eng.state == "playing")
+    st = eng.status()
+    assert st["last_error"] is None
+    assert st["last_error_at"] is None
+    await eng.stop()
