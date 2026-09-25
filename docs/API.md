@@ -85,7 +85,21 @@ For `end_action: goto`, the goto's own `transition` comes first in this order.
 
 `loop_item` is `true` while loop-item mode is on (see Transport).
 
-`state` is one of `starting`, `playing`, `paused`, `held` (ended with `hold`), `stopped`, `error` (the renderer failed and is restarting).
+`state` is one of `starting`, `playing`, `paused`, `held` (ended with `hold`), `stopped`, `dormant` (no display is connected — see below), `error` (the renderer failed and is restarting).
+
+`display_connected` is `true`, `false`, or `null` when the renderer has no concept of a display (the simulator). It is present in **every** state, including those where `output` is `null`, so a monitor can watch this one field rather than parsing `last_error`.
+
+### Running without a display
+
+The renderer needs a connected display to start. If the player restarts while the display is off or unplugged — after a power cut, say — it enters `dormant` rather than `error`: it retries every 30 seconds, reports `display_connected: false`, and resumes whatever it was playing as soon as a display appears. No intervention is needed.
+
+A display switched off *during* playback does not interrupt anything; the player keeps running and `display_connected` becomes `false` until it returns.
+
+To alert on a missing display:
+
+```
+GET /api/status  ->  .display_connected == false
+```
 `next` is `{"action": "stop"}` or `{"action": "hold"}` when the playlist won't continue.
 
 ### `GET /api/ws` (WebSocket)

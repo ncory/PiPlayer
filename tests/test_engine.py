@@ -13,7 +13,7 @@ from piplayer.backend_sim import SimBackend
 from piplayer.config import Store, ValidationError
 from piplayer.engine import Engine
 from piplayer.media import MediaLibrary
-from piplayer.backend import classify_error
+from piplayer.backend import NoDisplayError, classify_error
 
 HW = {"model": None, "family": None, "is_pi": False, "memory_mb": None}
 CUT = {"type": "cut"}
@@ -43,10 +43,14 @@ async def make_engine(data: Path, playlists: list[dict], default: str | None = N
             store.replace_playlist(pl["id"], pl)
         else:
             store.create_playlist(pl)
+    factory = settings.pop("factory", None)
     store.update_settings({"default_playlist": default or playlists[0]["id"],
                            "default_transition": CUT, **settings})
+    if factory is not None:
+        settings["factory"] = factory
     lib = MediaLibrary(data / "media", data / "cache", HW)
-    eng = Engine(store, lib, lambda s, h, e: SimBackend(s, h, e, load_delay=0.05), HW)
+    factory = settings.pop("factory", None) or (lambda s, h, e: SimBackend(s, h, e, load_delay=0.05))
+    eng = Engine(store, lib, factory, HW)
     await eng.start(autoplay=autoplay)
     return eng
 
@@ -387,3 +391,67 @@ def test_a_layer_owns_its_error_even_when_named_like_the_audio_sink():
     """Attribution to a layer wins: a live layer is never mistaken for the
     pipeline's audio sink."""
     assert classify_error(2, True, "asink", "default:CARD=vc4hdmi") == "layer"
+
+
+# ------------------------------------------------------------ no display
+
+class _DisplayThatArrivesLate:
+    """Backend factory whose first `fail_times` renderers refuse to start.
+
+    Mimics a Pi whose monitor is off: the renderer cannot open a display,
+    and a later attempt succeeds once one is plugged in.
+    """
+
+    def __init__(self, fail_times: int, exc: Exception | None = None):
+        self.remaining = fail_times
+        self.exc = exc if exc is not None else NoDisplayError("no connected display found")
+
+    def __call__(self, settings, hw, emit):
+        sim = SimBackend(settings, hw, emit, load_delay=0.05)
+        if self.remaining > 0:
+            self.remaining -= 1
+            exc = self.exc
+
+            async def refuse():
+                raise exc
+
+            sim.start = refuse
+        return sim
+
+
+async def test_no_display_is_reported_as_dormant_not_error(data):
+    eng = await make_engine(data, [{"id": "a", "name": "A", "items": items("clip.mp4")}],
+                            factory=_DisplayThatArrivesLate(99))
+    await wait_for(lambda: eng.state == "dormant")
+    st = eng.status()
+    assert st["state"] == "dormant"
+    # One field monitoring can watch, present even though the renderer is down.
+    assert st["display_connected"] is False
+    # the renderer object exists but never opened a display
+    assert (st["output"] or {}).get("display") is None
+    assert "no display" in (st["last_error"] or "").lower()
+    await eng.stop()
+
+
+async def test_dormant_player_resumes_when_a_display_appears(data):
+    eng = await make_engine(data, [{"id": "a", "name": "A", "items": items("clip.mp4", "clip2.mp4")}],
+                            factory=_DisplayThatArrivesLate(1))
+    await wait_for(lambda: eng.state == "dormant")
+    assert eng.status()["display_connected"] is False
+    # the retry builds a renderer that starts, as when a monitor is switched on
+    await wait_for(lambda: eng.state == "playing", timeout=10)
+    assert eng.current is not None
+    assert eng.status()["display_connected"] is not False
+    await eng.stop()
+
+
+async def test_a_real_start_failure_is_still_an_error(data):
+    """Only a missing display is dormancy; anything else stays a fault."""
+    eng = await make_engine(data, [{"id": "a", "name": "A", "items": items("clip.mp4")}],
+                            factory=_DisplayThatArrivesLate(99, RuntimeError("card on fire")))
+    await wait_for(lambda: eng.state == "error")
+    assert eng.state == "error"
+    assert eng.no_display is False
+    # not False: we do not claim the display is gone when we do not know
+    assert eng.status()["display_connected"] is not False
+    await eng.stop()

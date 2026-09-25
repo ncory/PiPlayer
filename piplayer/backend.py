@@ -20,6 +20,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+class NoDisplayError(RuntimeError):
+    """A backend could not start because no display is connected.
+
+    The engine treats this as dormancy rather than failure: it keeps
+    retrying, reports it distinctly through the API, and resumes whatever
+    was playing once a display appears.
+    """
+
+
 Keyframes = list[tuple[float, float]]
 EmitFn = Callable[[str, "Layer | None", object], None]
 

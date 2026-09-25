@@ -137,6 +137,15 @@ class DrmError(OSError):
     pass
 
 
+class NoConnectedDisplay(DrmError):
+    """No display is plugged in (or it is powered off and dropped the link).
+
+    Distinct from other DRM failures because it is expected and temporary:
+    the renderer cannot run without a display, but should resume when one
+    appears rather than treating it as a fault.
+    """
+
+
 def _check(ret: int, what: str) -> int:
     if ret < 0:
         err = C.get_errno() or -ret
@@ -240,7 +249,7 @@ class Card:
                 for idx, crtc in enumerate(crtcs):
                     if possible & (1 << idx):
                         return Output(conn_id, name, crtc, idx, chosen)
-            raise DrmError(0, "no connected display found")
+            raise NoConnectedDisplay(0, "no connected display found")
         finally:
             drmModeFreeResources(res)
 

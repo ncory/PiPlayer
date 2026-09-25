@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from . import hw as hwmod
-from .backend import Backend, Layer, Source, eval_keyframes
+from .backend import NoDisplayError, Backend, Layer, Source, eval_keyframes
 from .config import Store
 from .media import MediaLibrary, media_kind
 
@@ -77,7 +77,10 @@ class Engine:
         self.hw = hw
         self.backend: Backend | None = None
         self.backend_ok = False
-        self.state = "starting"  # starting | playing | paused | held | stopped | error
+        self.state = "starting"  # starting | playing | paused | held | stopped | dormant | error
+        # True while the renderer cannot run for want of a display. Not a
+        # fault: playback resumes by itself when one is plugged in again.
+        self.no_display = False
         self.current: Layer | None = None
         self.target: Target | None = None
         self.last_playlist: str | None = None
@@ -134,8 +137,17 @@ class Engine:
             await self.backend.start()
             self.backend.set_background(self.store.settings["background_color"])
             self.backend.set_master_volume(self.store.settings["audio"]["volume"])
+            self.no_display = False
             return True
+        except NoDisplayError as e:
+            # Expected whenever the Pi runs with the display off or unplugged.
+            # Logged quietly: it repeats every retry until a display appears.
+            self.no_display = True
+            log.info("no display connected; waiting for one")
+            self._emit_threadsafe("fatal", None, f"no display connected: {e}")
+            return False
         except Exception as e:  # noqa: BLE001
+            self.no_display = False
             log.exception("renderer failed to start")
             self._emit_threadsafe("fatal", None, f"renderer failed to start: {e}")
             return False
@@ -535,7 +547,7 @@ class Engine:
             self._resume_target = self.target
         delay = RESTART_BACKOFF[min(self._restart_attempts, len(RESTART_BACKOFF) - 1)]
         self._restart_attempts += 1
-        self.state = "error"
+        self.state = "dormant" if self.no_display else "error"
         self._notify()
         await asyncio.sleep(delay)
         self._restart_scheduled = False
@@ -706,6 +718,7 @@ class Engine:
     # --------------------------------------------------------------- status
     def status(self) -> dict:
         b = self.backend
+        info = b.info() if b else None
         now = b.now() if b else 0.0
         cur, t = self.current, self.target
         pl = self.store.get_playlist(t.playlist) if t else None
@@ -721,7 +734,12 @@ class Engine:
             "transitioning": now < self.transition_until,
             "loop_item": self.loop_item,
             "last_error": self.last_error,
-            "output": b.info() if b else None,
+            # One field for monitoring to watch, present in every state --
+            # including when the renderer is down and "output" is null.
+            # True/False from the renderer or the dormancy flag, None when
+            # the backend has no concept of a display (the simulator).
+            "display_connected": self._display_connected(info),
+            "output": info,
         }
         if cur and t:
             out["item"] = {"uid": t.uid, "media": cur.source.media, "kind": cur.source.kind}
@@ -739,6 +757,14 @@ class Engine:
             else:
                 out["next"] = {"action": nxt}
         return out
+
+    def _display_connected(self, info: dict | None) -> bool | None:
+        if self.no_display:
+            return False
+        disp = (info or {}).get("display")
+        if isinstance(disp, dict) and "connected" in disp:
+            return bool(disp["connected"])
+        return None
 
     def health(self) -> dict:
         return {**hwmod.health(), "errors": self.errors[-10:]}

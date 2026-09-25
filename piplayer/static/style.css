@@ -66,6 +66,8 @@ main { max-width: 1280px; margin: 0 auto; padding: 16px; }
 .badge.playing { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
 .badge.paused, .badge.held { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
 .badge.error { background: color-mix(in srgb, var(--err) 18%, transparent); color: var(--err); }
+/* waiting for a display: not a fault, so warn rather than error colouring */
+.badge.dormant { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
 .progress { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
 #st-bar { height: 100%; width: 0; background: var(--accent); transition: width .9s linear; }
 .now-times { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; margin-top: 4px; font-variant-numeric: tabular-nums; }
@@ -95,6 +97,7 @@ main { max-width: 1280px; margin: 0 auto; padding: 16px; }
 .sys { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
 .sys dt { color: var(--muted); } .sys dd { margin: 0; font-variant-numeric: tabular-nums; }
 .error-line { color: var(--err); font-size: 12px; margin-top: 8px; overflow-wrap: anywhere; }
+.error-line.waiting { color: var(--warn); }
 
 /* playlists */
 .split { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 16px; align-items: start; }

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import glob
 import io
 import logging
 import threading
@@ -44,7 +45,8 @@ gi.require_version("GstApp", "1.0")
 from gi.repository import Gst, GstAllocators, GstApp, GstVideo  # noqa: E402,F401
 
 from . import kms  # noqa: E402
-from .backend import Keyframes, Layer, Source, covers, eval_keyframes, fit_rect, hex_to_rgb  # noqa: E402
+from .backend import (Keyframes, Layer, NoDisplayError, Source, covers,  # noqa: E402
+                      eval_keyframes, fit_rect, hex_to_rgb)
 from .backend_gst import GstBackend, _LayerGst, _structure  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -120,6 +122,11 @@ class KmsBackend(GstBackend):
         self.convert_pool = concurrent.futures.ThreadPoolExecutor(1, "piplayer-freeze")
         self.bg_suppress_until = 0.0
         self.commit_failures = 0
+        # Live connector state, re-read from sysfs at most once a second:
+        # info() is polled by the API and the display can go away at any time.
+        self._conn_status_path: str | None = None
+        self._conn_checked = 0.0
+        self._conn_live = True
         self.frames_presented = 0
         self.last_commit_error: str | None = None
 
@@ -189,7 +196,13 @@ class KmsBackend(GstBackend):
 
     async def start(self) -> None:
         self.loop = asyncio.get_running_loop()
-        await asyncio.to_thread(self._open_display)
+        try:
+            await asyncio.to_thread(self._open_display)
+        except kms.NoConnectedDisplay as e:
+            # Translated to the backend-level signal so the engine can tell
+            # "nothing plugged in" (dormant, retry, resume) from a real fault
+            # without matching on the message text.
+            raise NoDisplayError(str(e)) from e
         await super().start()
         self.presenter = _Presenter(self)
         self.presenter.start()
@@ -625,6 +638,31 @@ class KmsBackend(GstBackend):
         return out.getvalue()
 
     # --------------------------------------------------------------- info
+    def _display_live(self) -> bool:
+        """Whether the connector still reports a display attached.
+
+        The renderer keeps running when a display is switched off mid-show
+        (by design), so this is read from sysfs rather than assumed from the
+        fact that start() once succeeded.
+        """
+        if not self.out:
+            return False
+        now = time.monotonic()
+        if now - self._conn_checked < 1.0:
+            return self._conn_live
+        self._conn_checked = now
+        if self._conn_status_path is None:
+            found = glob.glob(f"/sys/class/drm/card*-{self.out.name}/status")
+            self._conn_status_path = found[0] if found else ""
+        if not self._conn_status_path:
+            return self._conn_live  # can't tell; don't invent a fault
+        try:
+            with open(self._conn_status_path) as fh:
+                self._conn_live = fh.read().strip() == "connected"
+        except OSError:
+            pass
+        return self._conn_live
+
     def info(self) -> dict[str, Any]:
         shown = sum(k.frames_shown for k in self.klayers.values())
         got = sum(k.frames_in for k in self.klayers.values())
@@ -633,7 +671,8 @@ class KmsBackend(GstBackend):
             "render_size": list(self.render_size),
             "fps": self.fps,
             "display": {"connector": self.out.name, "mode": self.out.mode_name(),
-                        "connected": True, "modes": self.modes, "forced": self.forced_mode,
+                        "connected": self._display_live(), "modes": self.modes,
+                        "forced": self.forced_mode,
                         "forceable": [f"{w}x{h}@{hz}" for (w, h, hz) in kms.CEA_MODES
                                       if f"{w}x{h}@{hz}" not in self.modes]} if self.out else None,
             "audio_device": self.audio_device,

@@ -133,7 +133,9 @@ function renderNow() {
   const badge = $("#st-state");
   badge.textContent = st.loading ? "loading" : st.state; badge.className = "badge " + st.state;
   $("#st-playlist").textContent = st.playlist ? st.playlist.name : "";
-  $("#st-item").textContent = st.item ? st.item.media : (st.state === "stopped" ? "Stopped" : "—");
+  $("#st-item").textContent = st.item ? st.item.media
+    : st.state === "dormant" ? "Waiting for a display"
+    : st.state === "stopped" ? "Stopped" : "—";
   $("#st-pos").textContent = fmt(st.position);
   $("#st-dur").textContent = fmt(st.duration);
   $("#st-bar").style.width = st.duration ? Math.min(100, (100 * st.position) / st.duration) + "%" : "0";
@@ -145,7 +147,12 @@ function renderNow() {
   if (st.next && st.loop_item) $("#st-next").textContent = "looping this item";
   renderPositionerState();
   renderLimitsNotice();
-  $("#st-error").textContent = st.last_error ? "Last error: " + st.last_error : "";
+  const dormant = st.state === "dormant";
+  $("#st-error").textContent = dormant
+    ? "No display connected. Playback resumes automatically when one is plugged in."
+    : st.last_error ? "Last error: " + st.last_error : "";
+  // waiting for a display is not a fault, so don't colour it like one
+  $("#st-error").className = dormant ? "error-line waiting" : "error-line";
   document.querySelectorAll("#quick button").forEach((b) => b.classList.toggle("current", b.dataset.id === st.playlist?.id));
   renderCurrentItems();
 }
