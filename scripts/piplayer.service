@@ -18,6 +18,10 @@ ExecStart=/usr/bin/python3 -m piplayer
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 # Headroom for file descriptors (dmabufs, V4L2 devices, sockets)
 LimitNOFILE=16384
+# Allow a core dump when the process is killed by a signal. systemd's default
+# is 0, which silently discards them; systemd-coredump (see scripts/diagnostics.sh)
+# needs this to capture anything.
+LimitCORE=infinity
 Restart=always
 RestartSec=3
 TimeoutStopSec=10

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import faulthandler
 import logging
 import os
 import signal
@@ -110,6 +111,12 @@ def main() -> None:
     args = parse_args()
     logging.basicConfig(level=args.log_level.upper(),
                         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
+    # Most of the work happens in C (GStreamer, libdrm via ctypes), where a bug
+    # kills the process with SIGSEGV and no Python traceback. faulthandler
+    # prints the Python stack of every thread to stderr first, which systemd
+    # captures in the journal -- usually enough to place the crash without a
+    # core dump. Costs nothing while the process is healthy.
+    faulthandler.enable()
     asyncio.run(main_async(args))
 
 
