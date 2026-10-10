@@ -92,6 +92,19 @@ systemd-analyze blame | head
 
 On a stock Raspberry Pi OS image the usual remaining costs are `cloud-init` (about 4s, only needed for first-boot provisioning) and the swap-file resize. Neither is needed on a configured player, and both sit on the path to starting playback.
 
+Measured on a Pi 3 after a real power cut, power-on to picture on screen:
+
+| Phase | Time |
+| --- | --- |
+| Firmware/bootloader (reads ~28 MB off the card before Linux exists) | 9.6s |
+| Kernel | 4.7s |
+| Userspace → picture | 16.8s |
+| **Total** | **31.0s** |
+
+`sudo ./scripts/fastboot.sh` takes the low-risk time out of that: it disables cloud-init (about 4.5s of first-boot provisioning that runs on every boot and sits on the path to `basic.target`), stops the firmware probing for a camera and DSI panel a player does not have, and hides the boot splash. Reversible with `--disable`; none of it can stop the Pi booting. Revert before re-flashing the card if you want Raspberry Pi Imager's hostname/WiFi/SSH settings applied on first boot, since cloud-init is what applies them.
+
+The biggest single remaining item is the 15.7 MB initramfs — larger than the kernel — but shrinking or removing it can leave a Pi that will not boot without pulling the card, so it is deliberately not automated here.
+
 ### Diagnosing a crash
 
 Raspberry Pi OS keeps the journal in RAM and discards core dumps, so a crash can leave nothing behind — a failure that logs steadily will push its own cause out of the buffer before anyone looks. `sudo ./scripts/diagnostics.sh` turns on a persistent journal and `systemd-coredump`, both size-capped (100 MB and 50 MB by default; `--journal-max` and `--core-max` to change, `--disable` to revert).
