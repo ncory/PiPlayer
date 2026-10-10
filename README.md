@@ -68,6 +68,20 @@ The installer therefore appends `gpu_mem=128` to `/boot/firmware/config.txt` (ba
 
 To check the hardware (display, GL, decoders, audio), run `sudo ./scripts/diag.sh /var/lib/piplayer/media/some-video.mp4`.
 
+### Boot time
+
+After a power cut the player should be back on screen quickly. The service deliberately does **not** wait for `network-online.target`: nothing in PiPlayer contacts the network at startup, and the web server binds `0.0.0.0`, which covers interfaces that appear later. On a Pi 3 that dependency alone delayed playback by about 14 seconds — the display hardware is bound at ~12s while NetworkManager does not report connectivity until ~22s.
+
+To see where the remaining time goes:
+
+```bash
+systemd-analyze                              # kernel vs userspace
+systemd-analyze critical-chain piplayer.service
+systemd-analyze blame | head
+```
+
+On a stock Raspberry Pi OS image the usual remaining costs are `cloud-init` (about 4s, only needed for first-boot provisioning) and the swap-file resize. Neither is needed on a configured player, and both sit on the path to starting playback.
+
 ### Diagnosing a crash
 
 Raspberry Pi OS keeps the journal in RAM and discards core dumps, so a crash can leave nothing behind — a failure that logs steadily will push its own cause out of the buffer before anyone looks. `sudo ./scripts/diagnostics.sh` turns on a persistent journal and `systemd-coredump`, both size-capped (100 MB and 50 MB by default; `--journal-max` and `--core-max` to change, `--disable` to revert).

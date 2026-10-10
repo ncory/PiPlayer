@@ -1,7 +1,11 @@
 [Unit]
 Description=PiPlayer network-controlled video player
-After=network-online.target sound.target systemd-udev-settle.service
-Wants=network-online.target
+# Deliberately NOT network-online.target: nothing here talks to the network at
+# startup and the web server binds 0.0.0.0, which covers interfaces that appear
+# later. Waiting for NetworkManager to report connectivity delayed the start of
+# playback by about 14 seconds on a Pi 3 -- the display hardware is ready long
+# before the network is.
+After=network.target sound.target systemd-udev-settle.service
 
 [Service]
 Type=simple
