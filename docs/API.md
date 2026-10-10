@@ -281,5 +281,21 @@ The WebSocket also sends `{"type": "gpi", "pin": 17, "event": "close"}` on every
 |---|---|
 | `GET /api/system` | Version, Pi model, HDMI outputs and modes, temperature, throttling / under-voltage flags, recent errors, renderer info. |
 | `POST /api/system/restart-renderer` | Rebuild the video pipeline and resume the current item. |
+| `POST /api/system/power/reboot` | Reboot the Pi. |
+| `POST /api/system/power/shutdown` | Shut down the Pi. |
+
+### Power
+
+`reboot` and `shutdown` stop playback immediately. After a shutdown the Pi can only be started again **at the device** — nothing over the network can power it back on.
+
+The player runs as an unprivileged user, so these go through a `sudo` rule that `scripts/install.sh` installs, covering exactly `systemctl reboot` and `systemctl poweroff`. Without it the call returns **403** with an explanation rather than appearing to succeed. Pass `--no-power-control` to the installer to withhold the permission; the web UI's buttons then report 403 when used.
+
+The API is unauthenticated by design, so anyone who can reach it can power the Pi off. Keep it on a trusted network.
+
+The response is sent before the machine goes down, but the connection will usually drop mid-request anyway — clients should treat a dropped connection after a power request as success, not failure.
+
+```
+POST /api/system/power/reboot   ->  {"ok": true, "action": "reboot"}
+```
 | `GET /api/preview.jpg` | A small JPEG of what is currently on screen. |
 | `GET /api/docs` | This document (Markdown). |

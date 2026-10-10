@@ -166,6 +166,11 @@ dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--p
 dialog::backdrop { background: rgba(0,0,0,.5); }
 .picker .media-grid { max-height: 60vh; overflow: auto; padding: 4px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.confirm { max-width: 42ch; }
+.confirm-body { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+.btn.danger-solid { background: var(--err); border-color: var(--err); color: #fff; }
+.btn.danger-solid:hover { filter: brightness(1.1); }
+.power-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 
 /* positioner */
 .pos-preview { cursor: move; touch-action: none; user-select: none; }

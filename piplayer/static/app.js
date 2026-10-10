@@ -359,6 +359,39 @@ async function deletePlaylist() {
   S.selected = null; S.draft = null; S.dirty = false; await loadPlaylists(); renderEditor();
 }
 
+// Confirmation dialog. Resolves true only when the confirm button is used;
+// Escape, the backdrop and Cancel all resolve false.
+function confirmDialog({ title, body, confirmLabel }) {
+  const dlg = $("#confirm");
+  $("#confirm-title").textContent = title;
+  $("#confirm-body").textContent = body;
+  $("#confirm-ok").textContent = confirmLabel;
+  return new Promise((resolve) => {
+    const onClose = () => { dlg.removeEventListener("close", onClose); resolve(dlg.returnValue === "ok"); };
+    dlg.addEventListener("close", onClose);
+    dlg.returnValue = "cancel";
+    dlg.showModal();
+  });
+}
+
+async function powerAction(what) {
+  const spec = what === "reboot"
+    ? { title: "Reboot the Pi?", confirmLabel: "Reboot",
+        body: "Playback stops immediately and the player restarts on its own in about a minute." }
+    : { title: "Shut down the Pi?", confirmLabel: "Shut down",
+        body: "Playback stops and the Pi powers off. It can only be turned back on at the device \u2014 there is no way to start it again over the network." };
+  if (!(await confirmDialog(spec))) return;
+  try {
+    const r = await fetch(`/api/system/power/${what}`, { method: "POST" });
+    if (!r.ok) { toast(await r.text(), true); return; }
+    toast(what === "reboot" ? "Rebooting\u2026" : "Shutting down\u2026");
+  } catch {
+    // The connection usually dies mid-request because the Pi is going down;
+    // that is the expected outcome, not an error worth showing as one.
+    toast(what === "reboot" ? "Rebooting\u2026" : "Shutting down\u2026");
+  }
+}
+
 // media picker
 let pickOrder = [];
 function openPicker() {
@@ -572,6 +605,13 @@ function renderSettings() {
         "The analog jack also needs ", h("code", {}, "dtparam=audio=on"), " in ",
         h("code", {}, "/boot/firmware/config.txt"), " — Raspberry Pi OS sets that by default. ",
         "Turning audio on or off, or changing the device, briefly restarts playback; volume changes apply straight away.")),
+    h("fieldset", {}, h("legend", {}, "Power"),
+      h("div", { class: "power-row" },
+        h("button", { class: "btn danger", type: "button", onclick: () => powerAction("reboot") }, "Reboot Pi"),
+        h("button", { class: "btn danger", type: "button", onclick: () => powerAction("shutdown") }, "Shut down Pi")),
+      h("p", { class: "hint" },
+        "Both stop playback at once. After a shutdown the Pi can only be started again at the device \u2014 "
+        + "there is no way to power it back on over the network. Anyone who can reach this page can use these buttons.")),
     h("div", { class: "editor-actions" },
       h("div", {}, h("button", { class: "btn primary", type: "submit" }, "Save settings")),
       h("div", {}, h("button", { class: "btn", type: "button", onclick: () => act(() => api("POST", "/api/system/restart-renderer"), "Renderer restarted") }, "Restart renderer"))));

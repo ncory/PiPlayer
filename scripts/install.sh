@@ -11,6 +11,10 @@
 #
 # Options:
 #   --no-quiet-boot       leave the boot console / login prompt on the HDMI output
+#   --no-power-control    don't let the player reboot/shut down the Pi, which
+#                         disables the Reboot and Shut down buttons in the web UI.
+#                         The web UI is unauthenticated, so anyone who can reach
+#                         it can use those buttons.
 #   --gpu-mem N           firmware video memory in MB (default 128 on Pi 4 and
 #                         earlier with >=1GB RAM). 1080p dissolves need room for
 #                         two decoders plus a freeze buffer; the 76MB stock
@@ -29,6 +33,7 @@ DATA_DIR=/var/lib/piplayer
 SVC_USER=piplayer
 PORT=80
 QUIET_BOOT=1
+POWER_CONTROL=1
 GPU_MEM=128        # 0 = leave config.txt alone
 DEPLOY_USER=""
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -36,6 +41,7 @@ SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-quiet-boot) QUIET_BOOT=0 ;;
+    --no-power-control) POWER_CONTROL=0 ;;
     --gpu-mem) GPU_MEM="$2"; shift ;;
     --no-gpu-mem) GPU_MEM=0 ;;
     --port) PORT="$2"; shift ;;
@@ -98,6 +104,30 @@ if [[ -n "$DEPLOY_USER" ]]; then
     echo "warning: generated sudoers rule failed validation; skipped" >&2
   fi
   rm -f "$TMP"
+fi
+
+if [[ $POWER_CONTROL -eq 1 ]]; then
+  echo "==> Letting the player reboot and shut down the Pi (for the web UI buttons)"
+  # The service runs as the unprivileged "piplayer" user, so the Reboot and
+  # Shut down buttons need this. Scoped to exactly those two commands.
+  POWER_SUDOERS=/etc/sudoers.d/piplayer-power
+  TMP="$(mktemp)"
+  SYSTEMCTL="$(command -v systemctl)"
+  {
+    echo "# Installed by PiPlayer (scripts/install.sh): lets the unprivileged"
+    echo "# $SVC_USER service reboot and shut down the Pi, and nothing else, so the"
+    echo "# web UI's power buttons work. Remove this file, or re-run the installer"
+    echo "# with --no-power-control, to take the permission away."
+    echo "$SVC_USER ALL=(root) NOPASSWD: $SYSTEMCTL reboot, $SYSTEMCTL poweroff"
+  } >"$TMP"
+  if visudo -cf "$TMP" >/dev/null; then
+    install -m 0440 -o root -g root "$TMP" "$POWER_SUDOERS"
+  else
+    echo "warning: generated power sudoers rule failed validation; skipped" >&2
+  fi
+  rm -f "$TMP"
+else
+  rm -f /etc/sudoers.d/piplayer-power
 fi
 
 echo "==> Installing systemd service"

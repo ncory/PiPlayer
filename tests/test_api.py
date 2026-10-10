@@ -13,6 +13,7 @@ from piplayer.backend_sim import SimBackend
 from piplayer.config import Store
 from piplayer.engine import Engine
 from piplayer.media import MediaLibrary
+from piplayer import web as web_mod
 from piplayer.web import build_app
 
 HW = {"model": None, "family": None, "is_pi": False, "memory_mb": None}
@@ -113,3 +114,49 @@ async def test_websocket_pushes_status(client):
             break
     assert "playlist" in types
     await ws.close()
+
+
+# --------------------------------------------------------------- power
+
+async def test_reboot_and_shutdown_run_the_expected_commands(client, monkeypatch):
+    ran = []
+
+    async def fake(cmd):
+        ran.append(cmd)
+        return 0, ""
+
+    monkeypatch.setattr(web_mod, "run_power_command", fake)
+
+    r = await client.post("/api/system/power/reboot")
+    assert r.status == 200 and (await r.json())["action"] == "reboot"
+
+    r = await client.post("/api/system/power/shutdown")
+    assert r.status == 200 and (await r.json())["action"] == "shutdown"
+
+    assert ran == [("sudo", "-n", "systemctl", "reboot"),
+                   ("sudo", "-n", "systemctl", "poweroff")]
+
+
+async def test_unknown_power_action_is_rejected(client, monkeypatch):
+    """The action comes from the URL, so it must not reach a shell."""
+    async def fake(cmd):
+        raise AssertionError(f"should not have run anything, got {cmd}")
+
+    monkeypatch.setattr(web_mod, "run_power_command", fake)
+    # What matters is that each is refused and nothing runs -- the exact status
+    # varies (a value containing "/" misses the route and gets 405, not 404).
+    for bad in ("halt", "rm", "reboot;rm%20-rf%20/", "REBOOT", "poweroff"):
+        r = await client.post(f"/api/system/power/{bad}")
+        assert r.status >= 400, f"{bad} was accepted ({r.status})"
+
+
+async def test_power_failure_explains_the_missing_permission(client, monkeypatch):
+    """Without the sudoers rule the call must fail loudly, not look successful."""
+    async def fake(cmd):
+        return 1, "sudo: a password is required"
+
+    monkeypatch.setattr(web_mod, "run_power_command", fake)
+    r = await client.post("/api/system/power/reboot")
+    assert r.status == 403
+    body = await r.text()
+    assert "install.sh" in body and "password is required" in body

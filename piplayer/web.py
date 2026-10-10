@@ -23,6 +23,25 @@ from .media import MediaLibrary, media_kind
 
 log = logging.getLogger(__name__)
 
+# Exactly the two commands the sudoers rule permits. Kept as a table so the
+# route cannot be talked into running anything else.
+POWER_COMMANDS = {
+    "reboot": ("sudo", "-n", "systemctl", "reboot"),
+    "shutdown": ("sudo", "-n", "systemctl", "poweroff"),
+}
+
+
+async def run_power_command(cmd: tuple[str, ...]) -> tuple[int, str]:
+    """Run a power command; returns (returncode, stderr). Patched in tests."""
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+    try:
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return 1, "timed out"
+    return proc.returncode or 0, (err or b"").decode(errors="replace").strip()
+
 STATIC = Path(__file__).parent / "static"
 API_DOC = Path(__file__).parent.parent / "docs" / "API.md"
 TICKER = web.AppKey("ticker", asyncio.Task)
@@ -342,6 +361,26 @@ class Api:
         await self.engine.restart_backend("requested via API")
         return _json(self.engine.status())
 
+    async def power(self, request):
+        """Reboot or shut down the Pi.
+
+        The service runs unprivileged, so this goes through sudo; the rule is
+        installed by scripts/install.sh and covers these two commands only.
+        Without it the call fails cleanly rather than appearing to work.
+        """
+        what = request.match_info["what"]
+        if what not in POWER_COMMANDS:
+            raise web.HTTPNotFound(text=f"unknown power action: {what}")
+        cmd = POWER_COMMANDS[what]
+        log.warning("%s requested via API from %s", what, request.remote)
+        rc, err = await run_power_command(cmd)
+        if rc != 0:
+            # Most likely the sudoers rule is missing (the installer adds it).
+            raise web.HTTPForbidden(
+                text=f"could not {what}: {err or 'permission denied'}. "
+                     "Re-run scripts/install.sh to grant the player this permission.")
+        return _json({"ok": True, "action": what})
+
     async def preview(self, request):
         data = await self.engine.backend.snapshot() if self.engine.backend else None
         if not data:
@@ -409,6 +448,7 @@ def build_app(store: Store, library: MediaLibrary, engine: Engine, hw: dict,
     r.add_get("/api/gpi/{id}/fire", api.fire_gpi)
     r.add_get("/api/system", api.system)
     r.add_post("/api/system/restart-renderer", api.restart_renderer)
+    r.add_post("/api/system/power/{what}", api.power)
     r.add_get("/api/preview.jpg", api.preview)
     r.add_get("/api/docs", api.docs)
     r.add_get("/api/ws", api.ws)
