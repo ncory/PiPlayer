@@ -103,7 +103,11 @@ Measured on a Pi 3 after a real power cut, power-on to picture on screen:
 
 `sudo ./scripts/fastboot.sh` takes the low-risk time out of that: it disables cloud-init (about 4.5s of first-boot provisioning that runs on every boot and sits on the path to `basic.target`), stops the firmware probing for a camera and DSI panel a player does not have, and hides the boot splash. Reversible with `--disable`; none of it can stop the Pi booting. Revert before re-flashing the card if you want Raspberry Pi Imager's hostname/WiFi/SSH settings applied on first boot, since cloud-init is what applies them.
 
-The biggest single remaining item is the 15.7 MB initramfs — larger than the kernel — but shrinking or removing it can leave a Pi that will not boot without pulling the card, so it is deliberately not automated here.
+The biggest single remaining item is the initramfs: 15.7 MB against a 9.7 MB kernel, read at roughly 3 MB/s through the firmware's simple SD reader. `sudo ./scripts/skip-initramfs.sh` tells the firmware not to load it, which is worth several seconds.
+
+Raspberry Pi OS builds ext4 and the SD/MMC drivers into the kernel, so it mounts the root filesystem directly and the initramfs is not needed; the script verifies that before changing anything and refuses if those drivers are modules, if root is not plain ext4, or if the kernel command line points at an encrypted, LVM or NFS root.
+
+If a Pi does not come back, the fix is one line and any computer can do it: the boot partition is FAT, so put the card in a Mac or PC, open `config.txt` on the volume that appears (usually `bootfs`), set `auto_initramfs=1`, and put the card back. Nothing is deleted — the initramfs files stay on the card, so that one line restores it. (The root partition is ext4 and macOS cannot read it, but you never need to: everything controlling boot is on the FAT partition.)
 
 ### Diagnosing a crash
 
