@@ -47,6 +47,7 @@ Use **Raspberry Pi OS Lite (64-bit), Trixie**. You don't need the desktop: PiPla
    - enables the `piplayer` systemd service on port 80
    - hides boot messages and the tty1 login prompt
    - reserves 128 MB of video memory (`gpu_mem`) on Pi 4 and earlier
+   - turns on crash diagnostics: a persistent journal and core dumps, both size-capped (`--no-diagnostics` to skip)
 
    It also lets your user update PiPlayer later without a password: you own `/opt/piplayer` and may start, stop and restart the `piplayer` service and reboot the Pi, and nothing else. The service itself runs as the unprivileged `piplayer` user.
 
@@ -58,7 +59,7 @@ Use **Raspberry Pi OS Lite (64-bit), Trixie**. You don't need the desktop: PiPla
 
 To update, run the same `curl` command again. Playlists, settings and media are kept.
 
-From a checkout you can also run the system installer directly: `sudo ./scripts/install.sh [--deploy-user "$USER"] [--port N] [--no-quiet-boot] [--gpu-mem N | --no-gpu-mem]`.
+From a checkout you can also run the system installer directly: `sudo ./scripts/install.sh [--deploy-user "$USER"] [--port N] [--no-quiet-boot] [--gpu-mem N | --no-gpu-mem] [--no-diagnostics] [--fast-boot] [--no-power-control]`.
 
 ### Video memory (`gpu_mem`)
 
@@ -101,7 +102,7 @@ Measured on a Pi 3 after a real power cut, power-on to picture on screen:
 | Userspace → picture | 16.8s |
 | **Total** | **31.0s** |
 
-`sudo ./scripts/fastboot.sh` takes the low-risk time out of that: it disables cloud-init (about 4.5s of first-boot provisioning that runs on every boot and sits on the path to `basic.target`), stops the firmware probing for a camera and DSI panel a player does not have, and hides the boot splash. Reversible with `--disable`; none of it can stop the Pi booting. Revert before re-flashing the card if you want Raspberry Pi Imager's hostname/WiFi/SSH settings applied on first boot, since cloud-init is what applies them.
+`sudo ./scripts/fastboot.sh` — or `--fast-boot` when installing — takes the low-risk time out of that: it disables cloud-init (about 4.5s of first-boot provisioning that runs on every boot and sits on the path to `basic.target`), stops the firmware probing for a camera and DSI panel a player does not have, and hides the boot splash. Reversible with `--disable`; none of it can stop the Pi booting. Revert before re-flashing the card if you want Raspberry Pi Imager's hostname/WiFi/SSH settings applied on first boot, since cloud-init is what applies them.
 
 The biggest single remaining item is the initramfs: 15.7 MB against a 9.7 MB kernel, read at roughly 3 MB/s through the firmware's simple SD reader. `sudo ./scripts/skip-initramfs.sh` tells the firmware not to load it, which is worth several seconds.
 

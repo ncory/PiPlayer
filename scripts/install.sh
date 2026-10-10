@@ -11,6 +11,14 @@
 #
 # Options:
 #   --no-quiet-boot       leave the boot console / login prompt on the HDMI output
+#   --no-diagnostics      skip the persistent journal and core dumps. They cost
+#                         ~250ms of boot and 1-2MB of SD writes a day, and make
+#                         a crash explainable instead of a mystery.
+#   --fast-boot           also run scripts/fastboot.sh: disables cloud-init and
+#                         firmware probing for hardware a player does not have,
+#                         worth ~4s of the time to picture. Not the default
+#                         because a re-flashed card then ignores Raspberry Pi
+#                         Imager's hostname / WiFi / SSH settings.
 #   --no-power-control    don't let the player reboot/shut down the Pi, which
 #                         disables the Reboot and Shut down buttons in the web UI.
 #                         The web UI is unauthenticated, so anyone who can reach
@@ -34,6 +42,8 @@ SVC_USER=piplayer
 PORT=80
 QUIET_BOOT=1
 POWER_CONTROL=1
+DIAGNOSTICS=1
+FAST_BOOT=0
 GPU_MEM=128        # 0 = leave config.txt alone
 DEPLOY_USER=""
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -42,6 +52,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-quiet-boot) QUIET_BOOT=0 ;;
     --no-power-control) POWER_CONTROL=0 ;;
+    --no-diagnostics) DIAGNOSTICS=0 ;;
+    --fast-boot) FAST_BOOT=1 ;;
     --gpu-mem) GPU_MEM="$2"; shift ;;
     --no-gpu-mem) GPU_MEM=0 ;;
     --port) PORT="$2"; shift ;;
@@ -180,6 +192,18 @@ if [[ $QUIET_BOOT -eq 1 ]]; then
     done
   fi
   systemctl disable getty@tty1.service >/dev/null 2>&1 || true
+  REBOOT_NEEDED=1
+fi
+
+if [[ $DIAGNOSTICS -eq 1 ]]; then
+  # After the unit is installed: diagnostics.sh checks for LimitCORE in it.
+  # A failure here (no network for apt, say) must not fail the install -- the
+  # player works fine without crash forensics.
+  "$SRC_DIR/scripts/diagnostics.sh" || echo "warning: diagnostics setup failed; run scripts/diagnostics.sh later" >&2
+fi
+
+if [[ $FAST_BOOT -eq 1 ]]; then
+  "$SRC_DIR/scripts/fastboot.sh" || echo "warning: fastboot setup failed; run scripts/fastboot.sh later" >&2
   REBOOT_NEEDED=1
 fi
 
