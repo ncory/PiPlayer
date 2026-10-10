@@ -68,6 +68,19 @@ The installer therefore appends `gpu_mem=128` to `/boot/firmware/config.txt` (ba
 
 To check the hardware (display, GL, decoders, audio), run `sudo ./scripts/diag.sh /var/lib/piplayer/media/some-video.mp4`.
 
+### Diagnosing a crash
+
+Raspberry Pi OS keeps the journal in RAM and discards core dumps, so a crash can leave nothing behind — a failure that logs steadily will push its own cause out of the buffer before anyone looks. `sudo ./scripts/diagnostics.sh` turns on a persistent journal and `systemd-coredump`, both size-capped (100 MB and 50 MB by default; `--journal-max` and `--core-max` to change, `--disable` to revert).
+
+The cost is small: PiPlayer logs on the order of half a megabyte a day when healthy, and core dumps are written only when the process actually dies. After a crash:
+
+```bash
+coredumpctl info piplayer     # native backtrace
+journalctl -u piplayer -b -1  # the previous boot, including the Python stack
+```
+
+PiPlayer also enables `faulthandler`, so a segfault prints every thread's Python stack to the journal even without a core dump.
+
 ## Preparing media
 
 The Pi 3 only plays H.264 smoothly. To convert anything else, run this on your Mac/PC:

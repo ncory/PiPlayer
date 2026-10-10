@@ -12,16 +12,39 @@
 #
 # Both are size-limited so they cannot fill the SD card.  Undo with
 # --disable, which restores the stock behaviour.
+#
+# Options:
+#   --journal-max SIZE   cap on stored logs   (default 100M)
+#   --core-max SIZE      cap on core dumps    (default 50M)
+#   --disable            revert to volatile logs and no core dumps
+#
+# The defaults are sized for a player in service: PiPlayer logs on the order of
+# half a megabyte a day when healthy, so 100M holds months, and a core dump of
+# this process compresses to well under a megabyte.
 set -euo pipefail
 
-JOURNAL_MAX=${JOURNAL_MAX:-200M}
-CORE_MAX=${CORE_MAX:-200M}
+JOURNAL_MAX=${JOURNAL_MAX:-100M}
+CORE_MAX=${CORE_MAX:-50M}
 JOURNAL_DROPIN=/etc/systemd/journald.conf.d/piplayer-diagnostics.conf
 CORE_DROPIN=/etc/systemd/coredump.conf.d/piplayer-diagnostics.conf
 
-[[ $EUID -eq 0 ]] || { echo "run with sudo" >&2; exit 1; }
+DISABLE=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --journal-max) JOURNAL_MAX="$2"; shift ;;
+    --core-max) CORE_MAX="$2"; shift ;;
+    --disable) DISABLE=1 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
 
-if [[ "${1:-}" == "--disable" ]]; then
+[[ $EUID -eq 0 ]] || { echo "run with sudo" >&2; exit 1; }
+for v in "$JOURNAL_MAX" "$CORE_MAX"; do
+  [[ "$v" =~ ^[0-9]+[KMG]$ ]] || { echo "sizes look like 100M or 1G, not '$v'" >&2; exit 2; }
+done
+
+if [[ $DISABLE -eq 1 ]]; then
   echo "==> Reverting to volatile logs and no core dumps"
   rm -f "$JOURNAL_DROPIN" "$CORE_DROPIN"
   rm -rf /var/log/journal
