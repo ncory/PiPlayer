@@ -70,7 +70,17 @@ To check the hardware (display, GL, decoders, audio), run `sudo ./scripts/diag.s
 
 ### Boot time
 
-After a power cut the player should be back on screen quickly. The service deliberately does **not** wait for `network-online.target`: nothing in PiPlayer contacts the network at startup, and the web server binds `0.0.0.0`, which covers interfaces that appear later. On a Pi 3 that dependency alone delayed playback by about 14 seconds — the display hardware is bound at ~12s while NetworkManager does not report connectivity until ~22s.
+After a power cut the player should be back on screen quickly. The service deliberately has **no network ordering at all**: nothing in PiPlayer contacts the network at startup, and the web server binds `0.0.0.0`, which accepts interfaces that appear later.
+
+Measured on a Pi 3, time from kernel start to picture on screen:
+
+| Service ordered after | Picture on screen |
+| --- | --- |
+| `network-online.target` | 30.1s |
+| `network.target` | 25.5s |
+| neither (current) | see below |
+
+`network.target` is not free: it cannot be reached until NetworkManager has started, about 5s. The display hardware is bound at 12.4s — everything after that was the player waiting for a network it never uses.
 
 To see where the remaining time goes:
 

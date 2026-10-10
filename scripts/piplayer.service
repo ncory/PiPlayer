@@ -1,11 +1,13 @@
 [Unit]
 Description=PiPlayer network-controlled video player
-# Deliberately NOT network-online.target: nothing here talks to the network at
-# startup and the web server binds 0.0.0.0, which covers interfaces that appear
-# later. Waiting for NetworkManager to report connectivity delayed the start of
-# playback by about 14 seconds on a Pi 3 -- the display hardware is ready long
-# before the network is.
-After=network.target sound.target systemd-udev-settle.service
+# No network ordering at all, deliberately. Nothing here talks to the network at
+# startup and the web server binds 0.0.0.0, which accepts interfaces that appear
+# later, so neither target buys anything. Measured on a Pi 3: waiting for
+# network-online.target put the picture on screen at 30.1s and plain
+# network.target at 25.5s (it cannot be reached until NetworkManager has
+# started, ~5s). The display hardware is bound at 12.4s; everything after that
+# was the player waiting for a network it never uses.
+After=sound.target systemd-udev-settle.service
 
 [Service]
 Type=simple
