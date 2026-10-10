@@ -74,6 +74,11 @@ EOF
 install -d -m 2755 -g systemd-journal /var/log/journal 2>/dev/null || install -d /var/log/journal
 systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
 systemctl restart systemd-journald
+# Switch over *now*. Without this journald keeps writing to the runtime journal
+# in /run for the rest of this boot, because the migration normally happens once
+# at startup via systemd-journal-flush. Enabling persistence and then rebooting
+# would therefore lose exactly the logs explaining why you rebooted.
+journalctl --flush >/dev/null 2>&1 || true
 
 echo "==> Core dumps, capped at $CORE_MAX"
 install -d -m 0755 "$(dirname "$CORE_DROPIN")"
@@ -97,5 +102,8 @@ echo "Diagnostics enabled."
 echo "  After a crash:   coredumpctl list"
 echo "                   coredumpctl info piplayer     # backtrace"
 echo "  Logs now persist across reboots:  journalctl -u piplayer -b -1"
+if [[ -d /run/log/journal ]] && ! find /var/log/journal -name '*.journal' -print -quit | grep -q .; then
+  echo "  WARNING: logs are still only in RAM; reboot once to complete the switch." >&2
+fi
 echo "  Python-level stack on SIGSEGV is printed to the journal by faulthandler."
 echo "  Disk currently used:  $(journalctl --disk-usage 2>/dev/null | sed 's/^.*take up //')"
