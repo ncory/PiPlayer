@@ -160,3 +160,26 @@ async def test_power_failure_explains_the_missing_permission(client, monkeypatch
     assert r.status == 403
     body = await r.text()
     assert "install.sh" in body and "password is required" in body
+
+
+async def test_static_assets_must_revalidate(client):
+    """Without Cache-Control a browser may reuse app.js indefinitely, so a
+    deployed UI change simply never appears. Safari did exactly that."""
+    r = await client.get("/static/app.js")
+    assert r.status == 200
+    assert "no-cache" in r.headers.get("Cache-Control", "")
+    # the ETag is what keeps revalidation cheap (304, no body)
+    assert r.headers.get("ETag")
+
+
+async def test_index_still_revalidates(client):
+    r = await client.get("/")
+    assert r.status == 200
+    assert "no-cache" in r.headers.get("Cache-Control", "")
+
+
+async def test_api_responses_are_not_marked_no_cache(client):
+    """The middleware must only touch /static/, not API responses."""
+    r = await client.get("/api/status")
+    assert r.status == 200
+    assert "no-cache" not in r.headers.get("Cache-Control", "")

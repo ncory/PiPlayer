@@ -74,6 +74,23 @@ async def errors_mw(request: web.Request, handler):
 
 
 @web.middleware
+async def static_cache_mw(request: web.Request, handler):
+    """Make browsers revalidate /static/ instead of guessing.
+
+    aiohttp serves static files with an ETag and Last-Modified but no
+    Cache-Control, so a browser is free to reuse its copy without asking.
+    Safari does, and keeps doing it across a restart -- which means a UI
+    update can be deployed and simply not appear. "no-cache" means
+    "revalidate", not "don't cache": the ETag still turns an unchanged file
+    into a 304 with no body, so the cost is one tiny request per asset.
+    """
+    resp = await handler(request)
+    if request.path.startswith("/static/"):
+        resp.headers.setdefault("Cache-Control", "no-cache")
+    return resp
+
+
+@web.middleware
 async def cors_mw(request: web.Request, handler):
     # Trusted-LAN tool: let any web page / control system call the API.
     if request.method == "OPTIONS":
@@ -413,7 +430,8 @@ class Api:
 def build_app(store: Store, library: MediaLibrary, engine: Engine, hw: dict,
               gpi: GpiManager | None = None) -> web.Application:
     api = Api(store, library, engine, hw, gpi)
-    app = web.Application(middlewares=[cors_mw, errors_mw], client_max_size=4 * 1024 * 1024)
+    app = web.Application(middlewares=[static_cache_mw, cors_mw, errors_mw],
+                          client_max_size=4 * 1024 * 1024)
     r = app.router
     transport = [
         ("/api/play", api.play), ("/api/pause", api.pause), ("/api/resume", api.resume),
